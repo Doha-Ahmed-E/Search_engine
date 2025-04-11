@@ -116,3 +116,23 @@ public class WebCrawler
         crawler.startCrawling();
     }
 }
+
+
+/*
+ * package com.example;
+ * 
+ * import com.mongodb.client.MongoCollection; import org.bson.Document;
+ * 
+ * public class Crawler { public static void main(String[] args) { // Get access to the database
+ * connection MongoCollection<Document> collection =
+ * DatabaseConnection.getDatabase().getCollection("pages");
+ * 
+ * // Insert a sample document (simulating crawled data) Document doc = new Document("url",
+ * "https://example.com") .append("title", "Example Page") .append("content",
+ * "Extracted data from example.com");
+ * 
+ * collection.insertOne(doc); System.out.println("Document inserted successfully by the Crawler!");
+ * 
+ * // Close the connection when done (optional) DatabaseConnection.closeConnection(); } }
+ */
+

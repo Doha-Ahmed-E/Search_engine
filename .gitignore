@@ -1,0 +1,14 @@
+# Ignore environment files
+.env
+
+# Ignore compiled Java files & target folder
+*.class
+target/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore log files
+logs/
+*.log

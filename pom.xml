@@ -23,6 +23,19 @@
         <artifactId>jsoup</artifactId>
         <version>1.15.3</version>
     </dependency>
+    <dependency>
+        <groupId>org.mongodb</groupId>
+        <artifactId>mongodb-driver-sync</artifactId>
+        <version>4.10.1</version>
+    </dependency>
+    <dependency>
+    <groupId>io.github.cdimascio</groupId>
+    <artifactId>dotenv-java</artifactId>
+    <version>3.0.0</version>
+    </dependency>
+
+
+    
 
   </dependencies>
 </project>
