@@ -1,7 +1,7 @@
 # searchEngine
 
 crawler ===> structure done ☑️
-        ===> needs to go through the function and add the missing details (Gehad please 🥹🥹🥹)
+        ===> needs to go through the function and add the missing details (Gehad please 🥹🥹🥹) ☑️
         
         Key Features Added:
                         Complete URL Normalization - Proper handling of different URL formats
@@ -24,9 +24,12 @@ crawler ===> structure done ☑️
 
                         Error Handling - Comprehensive exception handling throughout
 
+                        
+        ===> scheduling and updating content                
+
 Indexer ===> very basic layout ☑️
         ===> fully integrate the database, think about what to store ☑️
-        ===> then we'll go over details together (probably mostly Gehad 😔)    
+        ===> then we'll go over details together    
         ===> should be done by next sunday (hopefully) (either Esraa or Aliaa is working on it if we need help)
 
 
