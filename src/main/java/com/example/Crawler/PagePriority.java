@@ -1,7 +1,7 @@
 package com.example.Crawler;
 
 import java.util.concurrent.PriorityBlockingQueue;
-import java.util.concurrent.locks.ReentrantLock;
+
 
 //Purpose: Manages the priority queue of URLs to crawl.
 //Thread-safe PriorityBlockingQueue implementation
@@ -16,6 +16,11 @@ public class PagePriority {
         queue.add(new WebPage(url, linkScore));
     }
 
+
+    public WebPage pollPage() {
+        return queue.poll();
+    }
+    
     public WebPage getNextPage() throws InterruptedException {
         return queue.take(); // Blocks until a page is available
     }
