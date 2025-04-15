@@ -34,4 +34,4 @@ Indexer ===> very basic layout ☑️
 
 
 # ps note: 
-        I think we'll have to go through the structure and the storing of the database again once we know for sure what to do with the details of every class , right now, all we have is a hopefully very well built container to fill              
+        I think we'll have to go through the structure and the storing of the database again once we know for sure what to do with the details of every class , right now, all we have is a hopefully very well built container to fill            
