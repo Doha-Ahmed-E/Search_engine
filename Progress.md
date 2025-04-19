@@ -1,8 +1,7 @@
 # searchEngine
 
 crawler ===> structure done ☑️
-        ===> needs to go through the function and add the missing details (Gehad please 🥹🥹🥹) ☑️
-        
+                
         Key Features Added:
                         Complete URL Normalization - Proper handling of different URL formats
 
@@ -29,9 +28,7 @@ crawler ===> structure done ☑️
 
 Indexer ===> very basic layout ☑️
         ===> fully integrate the database, think about what to store ☑️
-        ===> then we'll go over details together    
-        ===> should be done by next sunday (hopefully) (either Esraa or Aliaa is working on it if we need help)
-
+        
         Update Indexer.java
         Update Indexer.java to use the standalone CrawledDoc class instead of the nested CrawledDocument class. Replace all references to CrawledDocument with CrawledDoc.
         Removed the nested CrawledDocument class.
@@ -41,5 +38,9 @@ Indexer ===> very basic layout ☑️
 
         Your .env file specifies DB_NAME=web_crawler, but DatabaseConnection.java is hardcoded to use the database SearchDB. This mismatch means the Indexer is looking in the wrong database. Let’s update DatabaseConnection.java to use the database name from the .env file.
 
-# ps note: 
-        I think we'll have to go through the structure and the storing of the database again once we know for sure what to do with the details of every class , right now, all we have is a hopefully very well built container to fill            
+        ------------------------------------------------------------------------------------------
+
+       update tokenizer to make sure numbers and special characters (#, !,. ...etc) are not processed
+       update doc count inside the loop (instead of iterating the database agian after indexing)
+       multi-threading for indexer
+       
