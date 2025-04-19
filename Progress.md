@@ -32,6 +32,14 @@ Indexer ===> very basic layout ☑️
         ===> then we'll go over details together    
         ===> should be done by next sunday (hopefully) (either Esraa or Aliaa is working on it if we need help)
 
+        Update Indexer.java
+        Update Indexer.java to use the standalone CrawledDoc class instead of the nested CrawledDocument class. Replace all references to CrawledDocument with CrawledDoc.
+        Removed the nested CrawledDocument class.
+        Updated all references to CrawledDocument to CrawledDoc.
+        Updated the processText method to use the new removeStopWords method from StopWords.java, which now returns a mutable List<String>.
+        
+
+        Your .env file specifies DB_NAME=web_crawler, but DatabaseConnection.java is hardcoded to use the database SearchDB. This mismatch means the Indexer is looking in the wrong database. Let’s update DatabaseConnection.java to use the database name from the .env file.
 
 # ps note: 
         I think we'll have to go through the structure and the storing of the database again once we know for sure what to do with the details of every class , right now, all we have is a hopefully very well built container to fill            
