@@ -4,13 +4,26 @@ import org.tartarus.snowball.ext.PorterStemmer;
 
 public class Stemmer
 {
-    private static final PorterStemmer stemmer = new PorterStemmer();
+    private final PorterStemmer stemmer;
 
-    public static String stem(String word)
+    public Stemmer()
     {
+        this.stemmer = new PorterStemmer();
+    }
+
+    public String stem(String word)
+    {
+        if (word == null || word.isBlank())
+            return null;
+
         stemmer.setCurrent(word);
-        stemmer.stem();
-        return stemmer.getCurrent();
+        if (stemmer.stem())
+        {
+            // If stemming is successful, return the stemmed word
+            return stemmer.getCurrent();
+        }
+        // If stemming fails, return the original word
+
+        return word;
     }
 }
-

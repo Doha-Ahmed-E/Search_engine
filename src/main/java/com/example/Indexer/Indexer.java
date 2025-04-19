@@ -1,150 +1,195 @@
 package com.example.Indexer;
 
 import com.example.DatabaseConnection;
+import com.example.Crawler.PageHasher;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.UpdateOptions;
+import com.mongodb.client.model.Updates;
 import org.bson.Document;
-
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class Indexer
 {
-    private final MongoCollection<Document> pagesCollection;
-    private final MongoCollection<Document> indexCollection;
+    private final MongoCollection<Document> wordIndexCollection;
+    private final MongoCollection<Document> documentsCollection;
+    private final AtomicInteger docIdCounter = new AtomicInteger(0);
+    private final Tokenizer tokenizer;
+    private final StopWords stopWords;
+    private final Stemmer stemmer;
+
+    private static final double TITLE_WEIGHT = 3.0;
+    private static final double HEADER_WEIGHT = 2.0;
+    private static final double BODY_WEIGHT = 1.0;
 
     public Indexer()
     {
-        this.pagesCollection = DatabaseConnection.getDatabase().getCollection("pages");
-        this.indexCollection = DatabaseConnection.getDatabase().getCollection("index");
+        this.wordIndexCollection = DatabaseConnection.getDatabase().getCollection("index");
+        this.documentsCollection = DatabaseConnection.getDatabase().getCollection("pages");
+        this.tokenizer = new Tokenizer();
+        this.stopWords = new StopWords();
+        this.stemmer = new Stemmer();
     }
 
-    /// Method to start indexing
-    /// It retrieves documents from the pages collection, tokenizes the content,
-    /// removes stop words, stems the tokens, and stores the index in the index collection.
-    /// It also calculates term frequency (TF) and inverse document frequency (IDF) for each term.
-    /// The method also extracts word positions from the page and stores them in the index.
-
-    public void startIndexing()
+    public void indexDocuments(List<CrawledDoc> Docs)
     {
-        long totalDocuments = pagesCollection.countDocuments();
-        for (Document page : pagesCollection.find())
+        for (CrawledDoc Doc : Docs)
         {
-            String url = page.getString("url");
-            String content = page.getString("content");
+            try
+            {
+                indexSingleDocument(Doc);
+            }
+            catch (Exception e)
+            {
+                System.err.println(
+                        "Failed to index document: " + Doc.getUrl() + " - " + e.getMessage());
+            }
+        }
+        // Update doc_count in word_index after indexing
+        updateDocumentCounts();
+        System.out.println("Indexing completed. Total documents indexed: " + docIdCounter.get());
+    }
 
-            List<String> tokens = Tokenizer.tokenize(content);
-            tokens = StopWords.removeStopWords(tokens);
-            tokens.replaceAll(Stemmer::stem);
+    private void indexSingleDocument(CrawledDoc crawledDoc)
+    {
+        String url = crawledDoc.getUrl();
+        String htmlContent = crawledDoc.getHtmlContent();
+        String contentHash = PageHasher.generateHash(htmlContent);
 
-            Map<String, List<String>> wordPositions = extractWordPositions(page);
+        // Check for duplicates
+        Document existingDoc =
+                documentsCollection.find(Filters.eq("content_hash", contentHash)).first();
+        if (existingDoc != null)
+        {
+            System.out.println("Document already indexed, skipping: " + url);
+            return;
+        }
 
-            storeIndex(url, tokens, wordPositions, totalDocuments);
+        // Parse HTML content
+        org.jsoup.nodes.Document doc = Jsoup.parse(htmlContent, url);
+        String title = doc.title();
+        String docId = "doc_" + docIdCounter.incrementAndGet();
+
+        // Extract words and compute statistics
+        Map<String, WordStats> wordStats = new HashMap<>();
+        int totalWords = 0;
+
+        // Process title
+        totalWords += processText(title, TITLE_WEIGHT, wordStats);
+
+        // Process headers (h1–h6)
+        for (int i = 1; i <= 6; i++)
+        {
+            Elements headers = doc.select("h" + i);
+            for (Element header : headers)
+            {
+                totalWords += processText(header.text(), HEADER_WEIGHT, wordStats);
+            }
+        }
+
+        // Process body text
+        totalWords += processText(doc.body().text(), BODY_WEIGHT, wordStats);
+
+        // Save document metadata
+        Document docEntry = new Document().append("doc_id", docId).append("url", url)
+                .append("title", title).append("content_hash", contentHash)
+                .append("total_words", totalWords).append("timestamp", System.currentTimeMillis());
+        documentsCollection.insertOne(docEntry);
+
+        // Update word index with TF
+        updateWordIndex(docId, url, wordStats, totalWords);
+        System.out.println("Indexed document: " + url + " (ID: " + docId + ")");
+    }
+
+    private int processText(String text, double weight, Map<String, WordStats> wordStats)
+    {
+        if (text == null || text.trim().isEmpty())
+            return 0;
+
+        // Tokenize the text
+        List<String> tokens = tokenizer.tokenize(text);
+        if (tokens.isEmpty())
+            return 0;
+
+        // Remove stop words
+        tokens = stopWords.removeStopWords(tokens);
+
+        // stem tokens
+        int wordCount = 0;
+        for (String token : tokens)
+        {
+            // Stem the token
+            String stemmedWord = stemmer.stem(token);
+            if (stemmedWord == null || stemmedWord.isEmpty())
+                continue;
+
+            // Update word statistics
+            wordStats.computeIfAbsent(stemmedWord, k -> new WordStats()).addOccurrence(weight);
+            wordCount++;
+        }
+        return wordCount;
+    }
+
+    private void updateWordIndex(String docId, String url, Map<String, WordStats> wordStats,
+            int totalWords)
+    {
+        for (Map.Entry<String, WordStats> entry : wordStats.entrySet())
+        {
+            String word = entry.getKey();
+            WordStats stats = entry.getValue();
+
+            // Calculate TF: frequency / total_words
+            double tf = totalWords > 0 ? (double) stats.getFrequency() / totalWords : 0.0;
+
+            Document posting = new Document().append("doc_id", docId).append("url", url)
+                    .append("frequency", stats.getFrequency()).append("tf", tf)
+                    .append("importance_score", stats.getImportanceScore());
+
+            // Update word index
+            wordIndexCollection
+                    .updateOne(Filters.eq("word", word),
+                            new Document("$push", new Document("postings", posting))
+                                    .append("$setOnInsert", new Document("doc_count", 0)),
+                            new UpdateOptions().upsert(true));
         }
     }
 
-    // Method to store the index in the index collection
-    // It calculates term frequency (TF) and inverse document frequency (IDF) for each term
-    // and stores the term, document count, and positions in the index collection.
-    // The method also updates the index if the term already exists, using $setOnInsert and $push.
-    // The positions are sorted based on their priority (title, heading, body).
-
-    private void storeIndex(String url, List<String> tokens,
-            Map<String, List<String>> wordPositions, long totalDocuments)
+    private void updateDocumentCounts()
     {
-        int totalWords = tokens.size();
-        Map<String, Integer> termFrequency = new HashMap<>();
-
-        for (String term : tokens)
+        for (Document wordDoc : wordIndexCollection.find())
         {
-            termFrequency.put(term, termFrequency.getOrDefault(term, 0) + 1);
-        }
+            String word = wordDoc.getString("word");
+            List<Document> postings = wordDoc.getList("postings", Document.class);
+            int docCount = postings != null ? postings.size() : 0;
 
-        for (String term : termFrequency.keySet())
-        {
-            double tf = (double) termFrequency.get(term) / totalWords;
-
-            // Store IDF and document count only once
-            long docCount = indexCollection.countDocuments(new Document("term", term));
-            double idf = Math.log((double) totalDocuments / (docCount + 1));
-
-            List<String> positions = wordPositions.getOrDefault(term, List.of("body"));
-            positions.sort(Comparator.comparingInt(pos -> getPriority(pos)));
-
-            Document docEntry = new Document("url", url).append("tf", tf)
-                    .append("positions", positions).append("count", termFrequency.get(term));
-
-            indexCollection.updateOne(new Document("term", term),
-                    new Document("$setOnInsert",
-                            new Document("idf", idf).append("doc_count", totalDocuments))
-                                    .append("$push", new Document("documents", docEntry)),
-                    new com.mongodb.client.model.UpdateOptions().upsert(true));
-        }
-
-        System.out.println("Indexed: " + url);
-    }
-
-    // Method to extract word positions from the page
-    // It retrieves the title, headings, and body content from the page
-    // and tokenizes them to create a mapping of words to their positions.
-    // The positions are stored in a map where the key is the word and the value is a list of
-    // positions.
-    // The method uses the Tokenizer class to tokenize the content and the StopWords class to remove
-    // stop words.
-
-    private Map<String, List<String>> extractWordPositions(Document page)
-    {
-        Map<String, List<String>> wordPositions = new HashMap<>();
-
-        // Assume the page has "title", "headings", and "body" fields
-        String title = page.getString("title");
-        List<String> headings = page.getList("headings", String.class);
-        String body = page.getString("content");
-
-        addWordsToPositions(wordPositions, Tokenizer.tokenize(title), "title");
-        for (String heading : headings)
-        {
-            addWordsToPositions(wordPositions, Tokenizer.tokenize(heading), "heading");
-        }
-        addWordsToPositions(wordPositions, Tokenizer.tokenize(body), "body");
-
-        return wordPositions;
-    }
-
-    // Method to add words to the word positions map
-    // It takes a map of word positions, a list of words, and a position string
-    // and adds the words to the map with their corresponding position.
-    // The method uses the computeIfAbsent method to create a new list if the word is not already
-    // present in the map.
-    // The position is added to the list of positions for each word.
-    // The method is used to build the word positions map for the page.
-
-    private void addWordsToPositions(Map<String, List<String>> wordPositions, List<String> words,
-            String position)
-    {
-        for (String word : words)
-        {
-            wordPositions.computeIfAbsent(word, k -> new ArrayList<>()).add(position);
+            wordIndexCollection.updateOne(Filters.eq("word", word),
+                    Updates.set("doc_count", docCount));
         }
     }
 
-    // Method to get the priority of a position
-    // It takes a position string (title, heading, body) and returns an integer priority value.
-
-    private int getPriority(String pos)
+    public List<CrawledDoc> fetchCrawledDocuments()
     {
-        return switch (pos)
-        {
-            case "title" -> 1;
-            case "heading" -> 2;
-            case "body" -> 3;
-            default -> 4;
-        };
-    }
+        List<CrawledDoc> documents = new ArrayList<>();
 
-    // Main method to start the indexing process
-    // It creates an instance of the Indexer class and calls the startIndexing method.
+        for (Document doc : documentsCollection.find())
+        {
+            String url = doc.getString("url");
+            String content = doc.getString("content");
+            documents.add(new CrawledDoc(url, content));
+        }
+
+        return documents;
+    }
 
     public static void main(String[] args)
     {
-        new Indexer().startIndexing();
+        Indexer indexer = new Indexer();
+        List<CrawledDoc> crawledDocs = indexer.fetchCrawledDocuments();
+        indexer.indexDocuments(crawledDocs);
+        DatabaseConnection.closeConnection(); // Close connection when done
     }
 }

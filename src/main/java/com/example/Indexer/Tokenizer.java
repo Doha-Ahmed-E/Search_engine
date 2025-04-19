@@ -1,16 +1,26 @@
 package com.example.Indexer;
 
 import opennlp.tools.tokenize.SimpleTokenizer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 public class Tokenizer
 {
-    private static final SimpleTokenizer tokenizer = SimpleTokenizer.INSTANCE;
+    private final SimpleTokenizer tokenizer;
 
-    public static List<String> tokenize(String text)
+    public Tokenizer()
     {
-        return Arrays.asList(tokenizer.tokenize(text));
+        this.tokenizer = SimpleTokenizer.INSTANCE;
+    }
+
+    public List<String> tokenize(String text)
+    {
+
+        if (text == null || text.isBlank())
+            return new ArrayList<>(); // Return mutable empty list
+
+        List<String> tokens = new ArrayList<>(Arrays.asList(tokenizer.tokenize(text)));
+        return tokens;
     }
 }
-
