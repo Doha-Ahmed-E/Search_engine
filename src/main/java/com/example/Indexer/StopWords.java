@@ -29,7 +29,7 @@ public class StopWords
     }
 
 
-    public static List<String> removeStopWords(List<String> words)
+    public List<String> removeStopWords(List<String> words)
     {
         if (words == null || words.isEmpty())
         {
