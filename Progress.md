@@ -42,4 +42,5 @@ Indexer ===> very basic layout ☑️
 
        update tokenizer to make sure numbers and special characters (#, !,. ...etc) are not processed
        update doc count inside the loop (instead of iterating the database agian after indexing)
+       multi-threading for indexer
        

@@ -1,5 +1,9 @@
 package com.example.Indexer;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import com.example.DatabaseConnection; // From com.example
 import com.example.Crawler.PageHasher; // From com.example.Crawler
 import com.mongodb.client.MongoCollection;
@@ -10,7 +14,6 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
 
 
 public class Indexer
@@ -42,18 +45,49 @@ public class Indexer
 
     public void indexDocuments(List<CrawledDoc> crawledDocs)
     {
+        int processorCount = Runtime.getRuntime().availableProcessors();
+        ExecutorService executor = Executors.newFixedThreadPool(processorCount);
+        AtomicInteger completedCount = new AtomicInteger(0);
+        int totalDocs = crawledDocs.size();
+
+        System.out.println("Starting indexing with " + processorCount + " threads...");
+
         for (CrawledDoc crawledDoc : crawledDocs)
         {
-            try
+            executor.submit(() -> {
+                try
+                {
+                    indexSingleDocument(crawledDoc);
+                    int completed = completedCount.incrementAndGet();
+                    if (completed % 10 == 0 || completed == totalDocs)
+                    {
+                        System.out
+                                .println("Progress: " + completed + "/" + totalDocs + " documents");
+                    }
+                }
+                catch (Exception e)
+                {
+                    System.err.println("Failed to index document: " + crawledDoc.getUrl() + " - "
+                            + e.getMessage());
+                }
+            });
+        }
+        executor.shutdown();
+        try
+        {
+            // Wait for all tasks to complete or timeout after 1 hour
+            boolean finished = executor.awaitTermination(1, TimeUnit.HOURS);
+            if (!finished)
             {
-                indexSingleDocument(crawledDoc);
-            }
-            catch (Exception e)
-            {
-                System.err.println("Failed to index document: " + crawledDoc.getUrl() + " - "
-                        + e.getMessage());
+                System.out.println("Indexing timed out before completion");
             }
         }
+        catch (InterruptedException e)
+        {
+            System.err.println("Indexing was interrupted: " + e.getMessage());
+            Thread.currentThread().interrupt();
+        }
+
         System.out.println("Indexing completed. Total documents indexed: " + docIdCounter.get());
     }
 
@@ -180,9 +214,17 @@ public class Indexer
 
     public static void main(String[] args)
     {
+        long startTime = System.currentTimeMillis();
+
         Indexer indexer = new Indexer();
         List<CrawledDoc> crawledDocs = indexer.fetchCrawledDocuments();
+        System.out.println("Retrieved " + crawledDocs.size() + " documents to index");
+
         indexer.indexDocuments(crawledDocs);
+
+        long endTime = System.currentTimeMillis();
+        System.out.println("Total indexing time: " + (endTime - startTime) / 1000 + " seconds");
+
         DatabaseConnection.closeConnection(); // Close connection when done
     }
 }
