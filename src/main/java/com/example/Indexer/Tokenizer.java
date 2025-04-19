@@ -21,6 +21,8 @@ public class Tokenizer
             return new ArrayList<>(); // Return mutable empty list
 
         List<String> tokens = new ArrayList<>(Arrays.asList(tokenizer.tokenize(text)));
+        tokens.removeIf(word -> !word.matches("[a-zA-Z]+"));
+
         return tokens;
     }
 }
