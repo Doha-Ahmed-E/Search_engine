@@ -1,0 +1,53 @@
+{
+    "query_terms": [
+        "search",
+        "term",
+        "example"
+    ],
+    "candidate_documents": {
+        "doc_id_1": {
+            "term_stats": {
+                "search": {
+                    "tf": 0.05,
+                    "in_title": true,
+                    "importance_score": 0.8
+                },
+                "term": {
+                    "tf": 0.03,
+                    "in_title": false,
+                    "importance_score": 0.6
+                }
+            },
+            "metadata": {
+                "popularity": 0.85,
+                "length": 1250,
+                "publish_date": "2023-04-15"
+            }
+        },
+        "doc_id_2": {
+            "term_stats": {
+                "search": {
+                    "tf": 0.02,
+                    "in_title": false
+                },
+                "example": {
+                    "tf": 0.04,
+                    "in_title": true
+                }
+            },
+            "metadata": {
+                "popularity": 0.72,
+                "length": 930,
+                "publish_date": "2024-01-22"
+            }
+        }
+    },
+    "global_stats": {
+        "total_docs": 10000,
+        "docs_containing_term": {
+            "search": 3500,
+            "term": 2200,
+            "example": 1800
+        }
+    }
+}
