@@ -15,7 +15,6 @@ public class PageRank {
         int totalPages = graph.size();
         double initialRank = 1.0 / totalPages;
 
-        // Initialize
         for (String page : graph.keySet()) {
             pageRank.put(page, initialRank);
         }
@@ -24,17 +23,14 @@ public class PageRank {
             Map<String, Double> newPageRank = new HashMap<>();
             double danglingRank = 0.0;
 
-            // Calculate dangling node contributions
             for (String page : graph.keySet()) {
                 if (graph.get(page).isEmpty()) {
                     danglingRank += pageRank.get(page);
                 }
             }
 
-            // Distribute dangling rank equally
             danglingRank /= totalPages;
 
-            // Update ranks
             for (String page : graph.keySet()) {
                 double sum = 0.0;
                 for (String incoming : graph.keySet()) {
@@ -46,7 +42,6 @@ public class PageRank {
                     DAMPING_FACTOR * (sum + danglingRank));
             }
 
-            // Check convergence
             boolean converged = true;
             for (String page : pageRank.keySet()) {
                 if (Math.abs(newPageRank.get(page) - pageRank.get(page)) > EPSILON) {
@@ -64,14 +59,13 @@ public class PageRank {
 
     public static void main(String[] args) {
         Map<String, List<String>> graph = new HashMap<>();
-        graph.put("A", Arrays.asList("B", "C"));  // A links to B and C
+        graph.put("A", Arrays.asList("B", "C"));
         graph.put("B", Arrays.asList("C"));
         graph.put("C", Arrays.asList("A"));
 
         Map<String, Double> ranks = computePageRank(graph);
         ranks.forEach((page, rank) -> System.out.println(page + ": " + rank));
         
-        // Verify sum ≈ 1.0
         double sum = ranks.values().stream().mapToDouble(Double::doubleValue).sum();
         System.out.println("Sum: " + sum);
     }
