@@ -44,4 +44,10 @@ Indexer ===> very basic layout ☑️
        covert the words to lowercase before removing stop words for accuracy
        update doc count inside the loop (instead of iterating the database agian after indexing)
        multi-threading for indexer
+
+Query Processor 
+   - it's working and connected to the data base , but some data is hard coded (will modify the indexer accordingly)
+   - had to move the private classes out of the queryinput file, to use the same data structers the ranker expects, didn't modify any thing in the ranker files apart from adding imports to the moved classes.
+   - class Document is renamed QDocument to avoid conflicts with the bson.Document. 
+   - the output of the query processor is temporarily stored in a json file and printed in the consol just for the sake of testing        
        
