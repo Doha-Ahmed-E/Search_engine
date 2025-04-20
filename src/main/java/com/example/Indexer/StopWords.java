@@ -17,10 +17,10 @@ public class StopWords
             Path stopWordsPath = Paths.get("data/stop_words.txt");
 
             List<String> words = Files.readAllLines(stopWordsPath);
-            STOP_WORDS.addAll(
-                    words.stream().map(String::trim).filter(word -> !word.isBlank()).toList());
+            STOP_WORDS.addAll(words.stream().map(String::trim).filter(word -> !word.isBlank())
+                    .map(String::toLowerCase) // Ensure all stop words are lowercase
+                    .toList());
             System.out.println(" Loaded stop words from file.");
-
         }
         catch (IOException e)
         {
@@ -36,10 +36,10 @@ public class StopWords
             return new ArrayList<>(); // Return mutable empty list
         }
 
-        // Return a mutable list
-        return words.stream()
-                .filter(word -> word != null && !word.isBlank() && !STOP_WORDS.contains(word))
-                .collect(Collectors.toCollection(ArrayList::new)); // Use toCollection instead of
-                                                                   // toList()
+        // Return a mutable list with case normalization
+        return words.stream().filter(word -> word != null && !word.isBlank())
+                .map(String::toLowerCase) // Convert all words to lowercase
+                .filter(word -> !STOP_WORDS.contains(word)) // Now compare with stop words
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 }

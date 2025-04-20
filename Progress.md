@@ -41,6 +41,7 @@ Indexer ===> very basic layout ☑️
         ------------------------------------------------------------------------------------------
 
        update tokenizer to make sure numbers and special characters (#, !,. ...etc) are not processed
+       covert the words to lowercase before removing stop words for accuracy
        update doc count inside the loop (instead of iterating the database agian after indexing)
        multi-threading for indexer
        
