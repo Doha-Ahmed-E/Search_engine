@@ -100,6 +100,8 @@ public class Indexer
         String url = crawledDoc.getUrl();
         String htmlContent = crawledDoc.getHtmlContent();
         String contentHash = PageHasher.generateHash(htmlContent);
+        long timestamp = System.currentTimeMillis(); 
+
 
         // Check for duplicates
         Document existingDoc =
@@ -116,11 +118,14 @@ public class Indexer
         String docId = "doc_" + docIdCounter.incrementAndGet();
 
         // Extract words and compute statistics
+        int globalPosition = 0;
         Map<String, WordStats> wordStats = new HashMap<>();
         int totalWords = 0;
 
         // Process title
-        totalWords += processText(title, TITLE_WEIGHT, wordStats);
+        totalWords += processText(title, TITLE_WEIGHT, wordStats, globalPosition);
+        globalPosition = totalWords;
+        
 
         // Process headers (h1–h6)
         for (int i = 1; i <= 6; i++)
@@ -128,25 +133,35 @@ public class Indexer
             Elements headers = doc.select("h" + i);
             for (Element header : headers)
             {
-                totalWords += processText(header.text(), HEADER_WEIGHT, wordStats);
+                totalWords += processText(header.text(), HEADER_WEIGHT, wordStats, globalPosition);
+                globalPosition = totalWords;
+                
             }
         }
 
         // Process body text
-        totalWords += processText(doc.body().text(), BODY_WEIGHT, wordStats);
+        totalWords += processText(doc.body().text(), BODY_WEIGHT, wordStats, globalPosition);
+
 
         // Save document metadata
-        Document docEntry = new Document().append("doc_id", docId).append("url", url)
-                .append("title", title).append("content_hash", contentHash)
-                .append("total_words", totalWords).append("timestamp", System.currentTimeMillis());
+        Document docEntry = new Document()
+        .append("doc_id", docId)
+        .append("url", url)
+        .append("title", title)
+        .append("content_hash", contentHash)
+        .append("total_words", totalWords)
+        .append("timestamp", timestamp); 
+
         documentsCollection.insertOne(docEntry);
 
         // Update word index with TF
-        updateWordIndex(docId, url, wordStats, totalWords);
+        updateWordIndex(docId, url, wordStats, totalWords, timestamp);
+
         System.out.println("Indexed document: " + url + " (ID: " + docId + ")");
     }
 
-    private int processText(String text, double weight, Map<String, WordStats> wordStats)
+    private int processText(String text, double weight, Map<String, WordStats> wordStats, int startPosition)
+
     {
         if (text == null || text.trim().isEmpty())
             return 0;
@@ -165,20 +180,20 @@ public class Indexer
         int wordCount = 0;
         for (String token : tokens)
         {
-            // Stem the token
             String stemmedWord = stemmer.stem(token);
             if (stemmedWord == null || stemmedWord.isEmpty())
                 continue;
-
-            // Update word statistics
-            wordStats.computeIfAbsent(stemmedWord, k -> new WordStats()).addOccurrence(weight);
+        
+            int position = startPosition + wordCount;
+            wordStats.computeIfAbsent(stemmedWord, k -> new WordStats()).addOccurrence(weight, position);
             wordCount++;
         }
+        
         return wordCount;
     }
 
-    private void updateWordIndex(String docId, String url, Map<String, WordStats> wordStats,
-            int totalWords)
+    private void updateWordIndex(String docId, String url, Map<String, WordStats> wordStats, int totalWords, long timestamp)
+
     {
         for (Map.Entry<String, WordStats> entry : wordStats.entrySet())
         {
@@ -188,9 +203,16 @@ public class Indexer
             // Calculate TF: frequency / total_words
             double tf = totalWords > 0 ? (double) stats.getFrequency() / totalWords : 0.0;
 
-            Document posting = new Document().append("doc_id", docId).append("url", url)
-                    .append("frequency", stats.getFrequency()).append("tf", tf)
-                    .append("importance_score", stats.getImportanceScore());
+            Document posting = new Document()
+            .append("doc_id", docId)
+            .append("url", url)
+            .append("frequency", stats.getFrequency())
+            .append("tf", tf)
+            .append("importance_score", stats.getImportanceScore())
+            .append("length", totalWords) 
+            .append("timestamp", timestamp)
+            .append("positions", stats.getPositions()); 
+    
 
             wordIndexCollection.updateOne(Filters.eq("word", word),
                     new Document("$push", new Document("postings", posting)).append("$inc",

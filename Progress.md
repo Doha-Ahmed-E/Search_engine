@@ -44,6 +44,8 @@ Indexer ===> very basic layout ☑️
        covert the words to lowercase before removing stop words for accuracy
        update doc count inside the loop (instead of iterating the database agian after indexing)
        multi-threading for indexer
+       ------------------------------------------------------------------------------------------
+       =>add timestamp & lenght & positions in word-index collection
 
 Query Processor 
    - it's working and connected to the data base , but some data is hard coded (will modify the indexer accordingly)
