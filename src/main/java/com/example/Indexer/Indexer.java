@@ -28,6 +28,7 @@ public class Indexer
     private static final double TITLE_WEIGHT = 3.0;
     private static final double HEADER_WEIGHT = 2.0;
     private static final double BODY_WEIGHT = 1.0;
+    private static long totalDocs = 0;
 
     public Indexer()
     {
@@ -36,6 +37,9 @@ public class Indexer
         this.tokenizer = new Tokenizer();
         this.stopWords = new StopWords();
         this.stemmer = new Stemmer();
+        long count = documentsCollection.countDocuments();
+        System.out.println("Total documents in collection: " + count);
+
 
         // Create indexes for fast retrieval
         wordIndexCollection.createIndex(new Document("word", 1));
@@ -48,7 +52,7 @@ public class Indexer
         int processorCount = Runtime.getRuntime().availableProcessors();
         ExecutorService executor = Executors.newFixedThreadPool(processorCount);
         AtomicInteger completedCount = new AtomicInteger(0);
-        int totalDocs = crawledDocs.size();
+        totalDocs = crawledDocs.size();
 
         System.out.println("Starting indexing with " + processorCount + " threads...");
 
@@ -196,6 +200,29 @@ public class Indexer
         }
     }
 
+    private double computeIdf(int docsWithTerm)
+    {
+        if (docsWithTerm <= 0)
+            return 0.0;
+        return Math.log((double) totalDocs / (1 + docsWithTerm));
+    }
+
+    private void computeAndStoreIdfValues() {
+        for (Document wordEntry : wordIndexCollection.find()) {
+            String word = wordEntry.getString("word");
+            int docCount = wordEntry.getInteger("doc_count");
+            double idf = computeIdf(docCount);
+    
+            wordIndexCollection.updateOne(
+                    Filters.eq("word", word),
+                    new Document("$set", new Document("idf", idf))
+            );
+        }
+    
+        System.out.println("IDF values calculated and stored for all indexed words.");
+    }
+    
+
     public List<CrawledDoc> fetchCrawledDocuments()
     {
         List<CrawledDoc> documents = new ArrayList<>();
@@ -215,16 +242,26 @@ public class Indexer
     public static void main(String[] args)
     {
         long startTime = System.currentTimeMillis();
-
         Indexer indexer = new Indexer();
-        List<CrawledDoc> crawledDocs = indexer.fetchCrawledDocuments();
-        System.out.println("Retrieved " + crawledDocs.size() + " documents to index");
 
-        indexer.indexDocuments(crawledDocs);
-
-        long endTime = System.currentTimeMillis();
-        System.out.println("Total indexing time: " + (endTime - startTime) / 1000 + " seconds");
-
-        DatabaseConnection.closeConnection(); // Close connection when done
+        try
+        {
+            List<CrawledDoc> crawledDocs = indexer.fetchCrawledDocuments();
+            System.out.println("Retrieved " + crawledDocs.size() + " documents to index");
+            indexer.indexDocuments(crawledDocs);
+            indexer.computeAndStoreIdfValues();
+        }
+        catch (Exception e)
+        {
+            System.err.println("Indexing error: " + e.getMessage());
+            e.printStackTrace();
+        }
+        finally
+        {
+            DatabaseConnection.closeConnection(); // ✅ Always called
+            long endTime = System.currentTimeMillis();
+            System.out.println("Total indexing time: " + (endTime - startTime) / 1000 + " seconds");
+        }
     }
+
 }

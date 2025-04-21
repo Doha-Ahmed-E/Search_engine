@@ -12,6 +12,7 @@ public class TermStats
 
     @JsonProperty("importance_score")
     private double importanceScore;
+    public TermStats() {}
 
     public TermStats(boolean inTitle)
     {
