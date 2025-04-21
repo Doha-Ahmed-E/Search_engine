@@ -202,8 +202,6 @@ public class Indexer
 
     private double computeIdf(int docsWithTerm)
     {
-        if (docsWithTerm <= 0)
-            return 0.0;
         return Math.log((double) totalDocs / (1 + docsWithTerm));
     }
 

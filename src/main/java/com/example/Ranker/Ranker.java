@@ -1,7 +1,6 @@
 package com.example.Ranker;
 
 import com.example.QueryProcessor.QDocument;
-import com.example.QueryProcessor.GlobalStats;
 import com.example.QueryProcessor.TermStats;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -36,7 +35,7 @@ public class Ranker
             if (stats != null)
             {
                 double tf = stats.getTf();
-                double idf = computeIdf(term, input.getGlobalStats());
+                double idf =  input.getGlobalStats().getTermIDF().getOrDefault(term, 0.0);
                 double boost = stats.isInTitle() ? titleBoost : 1.0;
                 score += tf * idf * boost;
             }
@@ -44,11 +43,6 @@ public class Ranker
         return score;
     }
 
-    private double computeIdf(String term, GlobalStats stats)
-    {
-        int docsWithTerm = stats.getDocsContainingTerm().getOrDefault(term, 0);
-        return Math.log((double) stats.getTotalDocs() / (1 + docsWithTerm));
-    }
 
     public static void main(String[] args) throws Exception
     {
