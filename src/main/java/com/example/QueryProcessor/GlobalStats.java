@@ -11,6 +11,9 @@ public class GlobalStats
     @JsonProperty("docs_containing_term")
     private Map<String, Integer> docsContainingTerm;
 
+    @JsonProperty("term_idf")
+    private Map<String, Double> termIDF;
+
     public int getTotalDocs()
     {
         return totalDocs;
@@ -29,5 +32,15 @@ public class GlobalStats
     public void setDocsContainingTerm(Map<String, Integer> docsContainingTerm)
     {
         this.docsContainingTerm = docsContainingTerm;
+    }
+
+    public Map<String, Double> getTermIDF()
+    {
+        return termIDF;
+    }
+
+    public void setTermIDF(Map<String, Double> termIDF)
+    {
+        this.termIDF = termIDF;
     }
 }
