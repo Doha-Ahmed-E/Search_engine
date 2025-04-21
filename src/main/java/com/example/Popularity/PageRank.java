@@ -135,7 +135,7 @@ public class PageRank {
     
                 collection.updateOne(
                     new Document("url", url), 
-                    new Document("$set", new Document("pageRank", pageRank)) 
+                    new Document("$set", new Document("Popularity", pageRank)) 
                 );
             }
             System.out.println("Updated all documents with PageRank values.");
