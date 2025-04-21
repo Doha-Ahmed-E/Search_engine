@@ -50,9 +50,11 @@ public class QueryProcessor
 
 
 			Map<String, Integer> docsContainingTerm = new HashMap<>();
+			Map<String, Double> termIDF = new HashMap<>();
 			GlobalStats globalStats = new GlobalStats();
 			Map<String, QDocument> candidateDocs = new HashMap<>();
-			candidateDocs = collectDocumentInfo(queryTerms, docsContainingTerm, globalStats);
+			candidateDocs =
+					collectDocumentInfo(queryTerms, docsContainingTerm, termIDF, globalStats);
 
 			queryInput.setCandidateDocuments(candidateDocs);
 			queryInput.setGlobalStats(globalStats);
@@ -87,7 +89,8 @@ public class QueryProcessor
 
 	// Collect document information and term statistics
 	private Map<String, QDocument> collectDocumentInfo(List<String> queryTerms,
-			Map<String, Integer> docsContainingTerm, GlobalStats globalStats)
+			Map<String, Integer> docsContainingTerm, Map<String, Double> termIDF,
+			GlobalStats globalStats)
 	{
 
 		Map<String, QDocument> candidateDocs = new HashMap<>();
@@ -104,6 +107,7 @@ public class QueryProcessor
 			// Get doc-count for the term
 			Integer docFrequency = wordDoc.getInteger("doc_count");
 			docsContainingTerm.put(term, docFrequency);
+			termIDF.put(term, wordDoc.getDouble("idf"));
 
 			// Process each document containing this term
 			List<Document> postings = wordDoc.getList("postings", Document.class);
@@ -124,6 +128,7 @@ public class QueryProcessor
 		long totalDocsCount = documentsCollection.countDocuments();
 		globalStats.setTotalDocs((int) totalDocsCount);
 		globalStats.setDocsContainingTerm(docsContainingTerm);
+		globalStats.setTermIDF(termIDF);
 
 		return candidateDocs;
 	}
@@ -251,6 +256,16 @@ public class QueryProcessor
 			for (Map.Entry<String, Integer> entry : docsContainingTerm.entrySet())
 			{
 				System.out.println("    " + entry.getKey() + ": " + entry.getValue() + " docs");
+			}
+		}
+
+		System.out.println("  Term IDF values:");
+		Map<String, Double> termIDF = stats.getTermIDF();
+		if (termIDF != null)
+		{
+			for (Map.Entry<String, Double> entry : termIDF.entrySet())
+			{
+				System.out.println("    " + entry.getKey() + ": " + entry.getValue());
 			}
 		}
 

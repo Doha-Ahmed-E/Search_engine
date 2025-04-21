@@ -48,6 +48,11 @@
             "search": 3500,
             "term": 2200,
             "example": 1800
+        },
+        "term_idf": {
+            "search": 0.45,
+            "term": 0.55,
+            "example": 0.65
         }
     }
 }
