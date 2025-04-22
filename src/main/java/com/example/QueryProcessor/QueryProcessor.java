@@ -40,14 +40,12 @@ public class QueryProcessor
 		{
 			// Preprocess query
 			List<String> queryTerms = preprocessQuery(queryString);
+			QueryInput queryInput = new QueryInput();
 			if (queryTerms.isEmpty())
-				return new QueryInput();
-
+				return queryInput;
 
 			// Prepare the QueryInput object
-			QueryInput queryInput = new QueryInput();
 			queryInput.setQueryTerms(queryTerms);
-
 
 			Map<String, Integer> docsContainingTerm = new HashMap<>();
 			Map<String, Double> termIDF = new HashMap<>();
@@ -140,6 +138,7 @@ public class QueryProcessor
 
 		double tf = posting.getDouble("tf");
 		double importanceScore = posting.getDouble("importance_score");
+		boolean inTitle = posting.getBoolean("in_title");
 
 		// Get or create QDocument in our map
 		QDocument qDoc = candidateDocs.computeIfAbsent(docId, k -> new QDocument());
@@ -152,7 +151,7 @@ public class QueryProcessor
 			qDoc.setTermStats(termInfoMap);
 		}
 		// Add term statistics
-		TermStats termStats = new TermStats(false);
+		TermStats termStats = new TermStats(inTitle);
 		termStats.setTf(tf);
 		termStats.setImportanceScore(importanceScore);
 		termInfoMap.put(term, termStats);
@@ -166,7 +165,7 @@ public class QueryProcessor
 		Metadata metadata = new Metadata();
 		metadata.setUrl(posting.getString("url"));
 		metadata.setPopularity(0.5);
-		metadata.setLength(posting.getInteger("total_words", 0));
+		metadata.setLength(posting.getInteger("length", 0));
 
 		Long timestamp = posting.getLong("timestamp");
 		if (timestamp != null)
