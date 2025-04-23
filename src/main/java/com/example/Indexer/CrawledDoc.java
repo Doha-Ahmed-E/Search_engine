@@ -4,11 +4,13 @@ public class CrawledDoc
 {
     private final String url;
     private final String htmlContent;
+    private final String title;
 
-    public CrawledDoc(String url, String htmlContent)
+    public CrawledDoc(String url, String title, String htmlContent)
     {
         this.url = url;
         this.htmlContent = htmlContent;
+        this.title = title;
     }
 
     public String getUrl()
@@ -19,6 +21,11 @@ public class CrawledDoc
     public String getHtmlContent()
     {
         return htmlContent;
+    }
+
+    public String getTitle()
+    {
+        return title;
     }
 
 }

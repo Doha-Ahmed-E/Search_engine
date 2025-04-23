@@ -99,8 +99,9 @@ public class Indexer
     {
         String url = crawledDoc.getUrl();
         String htmlContent = crawledDoc.getHtmlContent();
+        String title = crawledDoc.getTitle();
         String contentHash = PageHasher.generateHash(htmlContent);
-        long timestamp = System.currentTimeMillis(); 
+        long timestamp = System.currentTimeMillis();
 
 
         // Check for duplicates
@@ -114,7 +115,6 @@ public class Indexer
 
         // Parse HTML content
         org.jsoup.nodes.Document doc = Jsoup.parse(htmlContent, url);
-        String title = doc.title();
         String docId = "doc_" + docIdCounter.incrementAndGet();
 
         // Extract words and compute statistics
@@ -125,7 +125,7 @@ public class Indexer
         // Process title
         totalWords += processText(title, TITLE_WEIGHT, wordStats, globalPosition);
         globalPosition = totalWords;
-        
+
 
         // Process headers (h1–h6)
         for (int i = 1; i <= 6; i++)
@@ -135,7 +135,7 @@ public class Indexer
             {
                 totalWords += processText(header.text(), HEADER_WEIGHT, wordStats, globalPosition);
                 globalPosition = totalWords;
-                
+
             }
         }
 
@@ -144,23 +144,19 @@ public class Indexer
 
 
         // Save document metadata
-        Document docEntry = new Document()
-        .append("doc_id", docId)
-        .append("url", url)
-        .append("title", title)
-        .append("content_hash", contentHash)
-        .append("total_words", totalWords)
-        .append("timestamp", timestamp); 
+        Document docEntry =
+                new Document().append("doc_id", docId).append("content_hash", contentHash);
 
         documentsCollection.insertOne(docEntry);
 
         // Update word index with TF
-        updateWordIndex(docId, url, wordStats, totalWords, timestamp);
+        updateWordIndex(docId, url, title, wordStats, totalWords, timestamp);
 
         System.out.println("Indexed document: " + url + " (ID: " + docId + ")");
     }
 
-    private int processText(String text, double weight, Map<String, WordStats> wordStats, int startPosition)
+    private int processText(String text, double weight, Map<String, WordStats> wordStats,
+            int startPosition)
 
     {
         if (text == null || text.trim().isEmpty())
@@ -183,36 +179,44 @@ public class Indexer
             String stemmedWord = stemmer.stem(token);
             if (stemmedWord == null || stemmedWord.isEmpty())
                 continue;
-        
+
             int position = startPosition + wordCount;
-            wordStats.computeIfAbsent(stemmedWord, k -> new WordStats()).addOccurrence(weight, position);
+            wordStats.computeIfAbsent(stemmedWord, k -> new WordStats()).addOccurrence(weight,
+                    position);
             wordCount++;
         }
-        
+
         return wordCount;
     }
 
-    private void updateWordIndex(String docId, String url, Map<String, WordStats> wordStats, int totalWords, long timestamp)
+    private void updateWordIndex(String docId, String url, String title,
+            Map<String, WordStats> wordStats, int totalWords, long timestamp)
 
     {
+        // Process title the same way as content to get stemmed words
+        Set<String> stemmedTitleWords = new HashSet<>();
+        if (title != null && !title.isEmpty())
+        {
+            Map<String, WordStats> titleWordStats = new HashMap<>();
+            processText(title, 1.0, titleWordStats, 0);
+            stemmedTitleWords.addAll(titleWordStats.keySet());
+        }
+
         for (Map.Entry<String, WordStats> entry : wordStats.entrySet())
         {
             String word = entry.getKey();
             WordStats stats = entry.getValue();
+            boolean inTitle = stemmedTitleWords.contains(word);
 
             // Calculate TF: frequency / total_words
             double tf = totalWords > 0 ? (double) stats.getFrequency() / totalWords : 0.0;
 
-            Document posting = new Document()
-            .append("doc_id", docId)
-            .append("url", url)
-            .append("frequency", stats.getFrequency())
-            .append("tf", tf)
-            .append("importance_score", stats.getImportanceScore())
-            .append("length", totalWords) 
-            .append("timestamp", timestamp)
-            .append("positions", stats.getPositions()); 
-    
+            Document posting = new Document().append("doc_id", docId).append("url", url)
+                    .append("in_title", inTitle).append("frequency", stats.getFrequency())
+                    .append("tf", tf).append("importance_score", stats.getImportanceScore())
+                    .append("length", totalWords).append("timestamp", timestamp)
+                    .append("positions", stats.getPositions());
+
 
             wordIndexCollection.updateOne(Filters.eq("word", word),
                     new Document("$push", new Document("postings", posting)).append("$inc",
@@ -227,21 +231,21 @@ public class Indexer
         return Math.log((double) totalDocs / (1 + docsWithTerm));
     }
 
-    private void computeAndStoreIdfValues() {
-        for (Document wordEntry : wordIndexCollection.find()) {
+    private void computeAndStoreIdfValues()
+    {
+        for (Document wordEntry : wordIndexCollection.find())
+        {
             String word = wordEntry.getString("word");
             int docCount = wordEntry.getInteger("doc_count");
             double idf = computeIdf(docCount);
-    
-            wordIndexCollection.updateOne(
-                    Filters.eq("word", word),
-                    new Document("$set", new Document("idf", idf))
-            );
+
+            wordIndexCollection.updateOne(Filters.eq("word", word),
+                    new Document("$set", new Document("idf", idf)));
         }
-    
+
         System.out.println("IDF values calculated and stored for all indexed words.");
     }
-    
+
 
     public List<CrawledDoc> fetchCrawledDocuments()
     {
@@ -253,7 +257,8 @@ public class Indexer
         {
             String url = doc.getString("url");
             String content = doc.getString("content");
-            documents.add(new CrawledDoc(url, content));
+            String title = doc.getString("title");
+            documents.add(new CrawledDoc(url, title, content));
         }
 
         return documents;
@@ -275,8 +280,7 @@ public class Indexer
         {
             System.err.println("Indexing error: " + e.getMessage());
             e.printStackTrace();
-        }
-        finally
+        } finally
         {
             DatabaseConnection.closeConnection(); // ✅ Always called
             long endTime = System.currentTimeMillis();
