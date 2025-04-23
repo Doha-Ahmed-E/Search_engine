@@ -53,8 +53,12 @@ public class Ranker
 
         // 2. Rank documents
         Ranker ranker = new Ranker();
+        long startTime = System.currentTimeMillis();
         List<RankedDocument> results = ranker.rank(input);
-
+        
+        long endTime = System.currentTimeMillis();
+        long duration = endTime - startTime;
+        System.out.println("Operation took " + duration + " milliseconds");
         // 3. Print results
         System.out.println("Ranked Results:");
         results.forEach(
