@@ -1,45 +1,97 @@
 package com.example.Crawler;
 
-import java.net.URL;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.Map;
 
 // manage rate limiting for different domains Ensures we don't overwhelm servers
 // with too many requests
 public class DomainRateLimiter
 {
     // Map of domain-specific rate limiters
-    private final ConcurrentMap<String, RateLimiter> limiters = new ConcurrentHashMap<>();
-    private static final long DEFAULT_DELAY = 1000; // Default 1 second delay
+    private static final long DEFAULT_DELAY = 500; // Default 1 second delay
 
-    /// Wait for the rate limit for a specific domain
-    public void waitForDomain(String url)
+    // Add these fields to DomainRateLimiter
+    private final Map<String, Integer> domainResponseTimes = new ConcurrentHashMap<>();
+    private final Map<String, Long> domainSuccessCount = new ConcurrentHashMap<>();
+    private Map<String, Long> lastAccessTimes = new ConcurrentHashMap<>();
+
+    // In your waitForDomain method, add this adaptive timing
+    public void waitForDomain(String url) throws InterruptedException
     {
-        try
-        {
-            String domain = new URL(url).getHost(); // Extract domain from URL
+        String domain = UrlNormalizer.extractDomain(url);
+        if (domain == null)
+            return;
 
-            // Get or create rate limiter for this domain
-            RateLimiter limiter = limiters.computeIfAbsent(domain,
-                    k -> new RateLimiter(RobotsChecker.getCrawlDelay(url)));
-            limiter.acquire(); // Wait for rate limit
-        }
-        catch (InterruptedException ie)
+        // Get domain statistics
+        long successCount = domainSuccessCount.getOrDefault(domain, 0L);
+        int avgResponseTime = domainResponseTimes.getOrDefault(domain, 0);
+
+        // Calculate adaptive delay (faster for responsive sites)
+        long adaptiveDelay = DEFAULT_DELAY;
+        if (successCount > 5)
         {
-            Thread.currentThread().interrupt();
-            System.out.println("Rate limiter interrupted for URL: " + url);
+            // Reduce delay for consistently fast domains
+            if (avgResponseTime < 500)
+            {
+                adaptiveDelay = 200; // Much faster for responsive domains
+            }
+            else if (avgResponseTime > 2000)
+            {
+                adaptiveDelay = Math.min(2000, DEFAULT_DELAY); // Cap delay for slow domains
+            }
         }
-        catch (Exception e)
+
+        // Apply delay
+        domain = domain.trim().toLowerCase();
+        Long lastAccess = lastAccessTimes.get(domain);
+        long currentTime = System.currentTimeMillis();
+
+        if (lastAccess != null)
         {
-            // If we can't parse the URL or get the rate limiter, use default delay
-            try
+            long timeSinceLastAccess = currentTime - lastAccess;
+            if (timeSinceLastAccess < adaptiveDelay)
             {
-                Thread.sleep(DEFAULT_DELAY);
+                Thread.sleep(adaptiveDelay - timeSinceLastAccess);
             }
-            catch (InterruptedException ie)
-            {
-                Thread.currentThread().interrupt();
-            }
+        }
+
+        lastAccessTimes.put(domain, System.currentTimeMillis());
+    }
+
+
+    // Records a successful request to a domain with its response time Used for adaptive rate
+    // limiting
+    public void recordSuccess(String domain, long responseTimeMs)
+    {
+        if (domain == null)
+            return;
+
+        domain = domain.trim().toLowerCase();
+
+        // Update response time tracking
+        Integer currentAvg = domainResponseTimes.getOrDefault(domain, 0);
+        int newCount = domainSuccessCount.getOrDefault(domain, 0L).intValue() + 1;
+
+        // Calculate new moving average (weight recent responses more)
+        int newAvg;
+        if (newCount <= 1)
+        {
+            newAvg = (int) responseTimeMs;
+        }
+        else
+        {
+            // Exponential moving average with 0.3 weight for new value
+            newAvg = (int) (currentAvg * 0.7 + responseTimeMs * 0.3);
+        }
+
+        domainResponseTimes.put(domain, newAvg);
+        domainSuccessCount.put(domain, (long) newCount);
+
+        // Optional: print stats every 10 successes
+        if (newCount % 10 == 0)
+        {
+            System.out.println("Domain stats - " + domain + ": " + newCount
+                    + " successes, avg response: " + newAvg + "ms");
         }
     }
 
