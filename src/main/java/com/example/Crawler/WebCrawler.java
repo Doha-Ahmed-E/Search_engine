@@ -30,8 +30,20 @@ public class WebCrawler
     private final DomainRateLimiter rateLimiter = new DomainRateLimiter();
 
     private volatile boolean isRunning = true; // Flag to control crawler operation
-    private final Object saveLock = new Object(); // Lock to synchronize saving operations
 
+    private final List<org.bson.Document> pageBuffer =
+            Collections.synchronizedList(new ArrayList<>());
+    private final int BATCH_SIZE = 200;
+    private final Object batchLock = new Object();
+
+    private final Set<String> contentHashCache =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final int MAX_HASH_CACHE = 10000;
+
+    private Map<String, Queue<String>> domainQueues = new ConcurrentHashMap<>();
+    private Queue<String> domainRotation = new ConcurrentLinkedQueue<>();
+
+    private final int MAX_LINKS_PER_PAGE = 35;
 
     public WebCrawler(String seedsFile, int maxPages, int threadCount)
     {
@@ -49,7 +61,7 @@ public class WebCrawler
     // start the crawler
     public void startCrawling()
     {
-        ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
+        ExecutorService executor = Executors.newWorkStealingPool(THREAD_COUNT);
         CountDownLatch latch = new CountDownLatch(THREAD_COUNT); // Count down when threads finish
 
         // Create and start worker threads
@@ -113,7 +125,7 @@ public class WebCrawler
             String url = null;
             try
             {
-                url = urlQueue.poll(5, TimeUnit.SECONDS); // Get next URL from queue with timeout
+                url = getNextUrl(); // Get next URL using domain rotation logic
                 if (url == null)
                 {
                     handleEmptyQueue();
@@ -141,6 +153,53 @@ public class WebCrawler
             {
                 System.err.println("Error processing URL: " + url + " - " + e.getMessage());
             }
+        }
+    }
+
+    private String getNextUrl()
+    {
+        // Add timeout to domain polling
+        long startTime = System.currentTimeMillis();
+        while (System.currentTimeMillis() - startTime < 3000) // 3 second timeout
+        {
+            // First try to get a URL through domain rotation
+            if (!domainRotation.isEmpty())
+            {
+                // Get next domain in rotation
+                String domain = domainRotation.poll();
+
+                // Get a URL from that domain if available
+                Queue<String> domainQueue = domainQueues.get(domain);
+                String url = domainQueue.poll();
+
+                // Put domain back in rotation if it has more URLs
+                if (!domainQueue.isEmpty())
+                {
+                    domainRotation.add(domain);
+                }
+
+                if (url != null)
+                {
+                    return url;
+                }
+
+                // Try another domain if current one is taking too long
+                if (!domainRotation.isEmpty() && System.currentTimeMillis() - startTime > 500)
+                {
+                    continue;
+                }
+            }
+        }
+
+        // Fall back to regular queue if domain rotation is empty
+        try
+        {
+            return urlQueue.poll(5, TimeUnit.SECONDS);
+        }
+        catch (InterruptedException e)
+        {
+            Thread.currentThread().interrupt();
+            return null;
         }
     }
 
@@ -177,7 +236,7 @@ public class WebCrawler
             }
 
             // Apply rate limiting for the domain
-            rateLimiter.waitForDomain(url);
+            rateLimiter.waitForDomain(url); // The delay here could be adjusted
             if (Thread.currentThread().isInterrupted())
             {
                 System.out.println("Interrupted during rate limiter wait: " + url);
@@ -185,7 +244,30 @@ public class WebCrawler
             }
 
             // Fetch the page content with retries
+            long fetchStart = System.currentTimeMillis();
             Document doc = fetchWithRetries(url);
+            long fetchTime = System.currentTimeMillis() - fetchStart;
+
+            // Track domain response time
+            String domain = UrlNormalizer.extractDomain(url);
+            if (doc != null && domain != null)
+            {
+                // Update domain statistics for rate limiter
+                rateLimiter.recordSuccess(domain, fetchTime);
+
+                // Every 20 pages, shuffle the domain rotation to avoid getting stuck
+                if (savedCount.get() % 20 == 0)
+                {
+                    synchronized (domainRotation)
+                    {
+                        List<String> domains = new ArrayList<>(domainRotation);
+                        Collections.shuffle(domains);
+                        domainRotation.clear();
+                        domainRotation.addAll(domains);
+                    }
+                }
+            }
+
             if (doc == null)
             {
                 System.out.println("Failed to fetch page: " + url);
@@ -248,9 +330,7 @@ public class WebCrawler
             try
             {
                 // Use Jsoup to fetch the page
-                return Jsoup.connect(url).userAgent(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.114 Safari/537.36")
-                        .timeout(10000) // 10 second timeout
+                return Jsoup.connect(url).userAgent("Mozilla/5.0...").timeout(3000)
                         .followRedirects(true).get();
             }
             catch (IOException e)
@@ -289,7 +369,7 @@ public class WebCrawler
                 allOutgoingLinks.add(absUrl);
 
             // Check if we should add to crawl queue
-            if (added < 50)
+            if (added < MAX_LINKS_PER_PAGE)
             {
                 String normalized = UrlNormalizer.normalize(absUrl);
                 if (normalized != null && !normalized.isEmpty() && normalized.startsWith("http")
@@ -308,44 +388,60 @@ public class WebCrawler
     private void savePage(String url, String title, String content, String contentHash,
             List<String> outgoingLinks)
     {
-        // Only synchronize the critical section
-        synchronized (saveLock)
+        synchronized (batchLock)
         {
-            // Double-check the limit
-            if (isMaxPagesReached())
-            {
-                System.out.println("Max pages reached during save attempt for: " + url);
-                return;
-            }
+            // Create unique document ID if needed
+            String docId = UUID.randomUUID().toString();
 
-            try
-            {
-                // Create document
-                org.bson.Document pageDoc = new org.bson.Document().append("url", url)
-                        .append("title", title).append("content", content)
-                        .append("contentHash", contentHash).append("outgoingLinks", outgoingLinks)
-                        .append("timestamp", System.currentTimeMillis());
+            // Create document with indexed=false flag
+            org.bson.Document pageDoc = new org.bson.Document().append("url", url)
+                    .append("title", title).append("content", content)
+                    .append("contentHash", contentHash).append("doc_id", docId)
+                    .append("outgoingLinks", outgoingLinks).append("indexed", false)
+                    .append("timestamp", System.currentTimeMillis());
 
-                // Insert document
-                collection.insertOne(pageDoc);
+            pageBuffer.add(pageDoc);
+            int newCount = savedCount.incrementAndGet();
 
-                // Increment counter after successful save
-                int newCount = savedCount.incrementAndGet();
-                System.out.println("Saved page " + newCount + "/" + MAX_PAGES + ": " + url);
-
-            }
-            catch (Exception e)
-            {
-                System.err.println("Failed to save to database: " + url + " - " + e.getMessage());
-                skippedCount.incrementAndGet();
-            }
+            // Only process the batch when it reaches the threshold
+            if (pageBuffer.size() >= BATCH_SIZE || newCount >= MAX_PAGES)
+                flushPageBuffer();
+            else
+                System.out.println("Buffered page " + newCount + "/" + MAX_PAGES + ": " + url);
         }
     }
 
-    // Stop the crawler gracefullypublic void stopCrawling()
+    // Add this new method for batch inserts
+    private void flushPageBuffer()
+    {
+        if (pageBuffer.isEmpty())
+            return;
+
+        List<org.bson.Document> batch;
+        synchronized (batchLock)
+        {
+            batch = new ArrayList<>(pageBuffer);
+            pageBuffer.clear();
+        }
+        try
+        {
+            // Insert all documents in one database operation
+            collection.insertMany(batch);
+            System.out.println("Batch saved: " + batch.size() + " pages");
+        }
+        catch (Exception e)
+        {
+            System.err.println("Failed to save batch to database: " + e.getMessage());
+            // Decrement savedCount for failed saves
+            savedCount.addAndGet(-batch.size());
+        }
+    }
+
+    // Stop the crawler gracefully
     public void stopCrawling()
     {
         isRunning = false;
+        flushPageBuffer(); // Ensure any remaining pages are saved
         printCrawlSummary();
         DatabaseConnection.closeConnection();
         System.out.println("Crawler stopped.");
@@ -376,8 +472,18 @@ public class WebCrawler
             String normalized = UrlNormalizer.normalize(url);
             if (normalized != null && !url.isEmpty())
             {
-                urlQueue.add(normalized);
-                System.out.println("Added seed URL: " + normalized);
+                String domain = UrlNormalizer.extractDomain(normalized);
+
+                // Add domain to rotation if new
+                if (!domainQueues.containsKey(domain))
+                {
+                    domainQueues.put(domain, new ConcurrentLinkedQueue<>());
+                    domainRotation.add(domain);
+                }
+
+                // Add URL to its domain queue
+                domainQueues.get(domain).add(normalized);
+                System.out.println("Added seed URL: " + normalized + " to domain: " + domain);
             }
         }
         catch (Exception e)
@@ -389,27 +495,37 @@ public class WebCrawler
     // Centralizing MAX_PAGES check
     private boolean isMaxPagesReached()
     {
-        synchronized (saveLock)
-        {
-            return savedCount.get() >= MAX_PAGES;
-        }
+        // AtomicInteger is already thread-safe
+        return savedCount.get() >= MAX_PAGES;
     }
 
     // Check if the page content is a duplicate based on its hash
     private boolean isDuplicate(String hash)
     {
+        // Check in-memory cache first (much faster)
+        if (contentHashCache.contains(hash))
+            return true;
+        // Only check database if not in cache
         try
         {
-            return collection.find(Filters.eq("contentHash", hash)).first() != null;
+            org.bson.Document doc = collection.find(Filters.eq("contentHash", hash)).first();
+            if (doc != null)
+            {
+                // Add to cache for future checks
+                if (contentHashCache.size() < MAX_HASH_CACHE)
+                    contentHashCache.add(hash);
+                return true;
+            }
+            return false;
         }
         catch (Exception e)
         {
             System.err.println("Database error checking for duplicate: " + e.getMessage());
-            return false; // Assume not duplicate on error to continue crawling
+            return false;
         }
     }
 
-    // Print a summary of the crawl statisticsprivate void printCrawlSummary()
+    // Print a summary of the crawl statistics
     private void printCrawlSummary()
     {
         System.out.println("\n--- CRAWL SUMMARY ---");
@@ -432,7 +548,7 @@ public class WebCrawler
     // Main method to run the crawler
     public static void main(String[] args)
     {
-        int maxPages = 200; // Maximum pages to save
+        int maxPages = 600; // Maximum pages to save
         int availableProcessors = Runtime.getRuntime().availableProcessors();
         int threadCount = Math.min(availableProcessors, 12);
         String seedsFile = "data/seeds.txt"; // Path to the seed URLs file
