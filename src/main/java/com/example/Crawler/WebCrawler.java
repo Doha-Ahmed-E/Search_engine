@@ -388,27 +388,26 @@ public class WebCrawler
     private void savePage(String url, String title, String content, String contentHash,
             List<String> outgoingLinks)
     {
-        // Create document
-        org.bson.Document pageDoc = new org.bson.Document().append("url", url)
-                .append("title", title).append("content", content)
-                .append("contentHash", contentHash).append("outgoingLinks", outgoingLinks)
-                .append("timestamp", System.currentTimeMillis());
-
-        // Add to buffer first (much faster than immediate DB write)
         synchronized (batchLock)
         {
+            // Create unique document ID if needed
+            String docId = UUID.randomUUID().toString();
+
+            // Create document with indexed=false flag
+            org.bson.Document pageDoc = new org.bson.Document().append("url", url)
+                    .append("title", title).append("content", content)
+                    .append("contentHash", contentHash).append("doc_id", docId)
+                    .append("outgoingLinks", outgoingLinks).append("indexed", false)
+                    .append("timestamp", System.currentTimeMillis());
+
             pageBuffer.add(pageDoc);
             int newCount = savedCount.incrementAndGet();
 
             // Only process the batch when it reaches the threshold
             if (pageBuffer.size() >= BATCH_SIZE || newCount >= MAX_PAGES)
-            {
                 flushPageBuffer();
-            }
             else
-            {
                 System.out.println("Buffered page " + newCount + "/" + MAX_PAGES + ": " + url);
-            }
         }
     }
 
