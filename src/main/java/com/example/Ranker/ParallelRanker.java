@@ -75,44 +75,31 @@ public class ParallelRanker {
 
     private RankedDocument createRankedDocument(String docId, QDocument doc, QueryInput input) {
         double relevance = computeRelevanceScore(input, doc);
-        double popularity = doc.getMetadata().getPopularity();
+        double popularity = doc != null && doc.getMetadata() != null ? doc.getMetadata().getPopularity() : 0.0;
         double score = alpha * relevance + (1 - alpha) * popularity;
-        return new RankedDocument(docId, score, relevance, popularity);
+        String URL = doc.getMetadata().getUrl();
+        return new RankedDocument(docId, score, relevance, popularity,URL);
     }
-
+    
     private double computeRelevanceScore(QueryInput input, QDocument doc) {
         double score = 0.0;
+        Map<String, TermStats> termStatsMap = doc.getTermStats();
+        Map<String, Double> termIdfMap = input.getGlobalStats().getTermIDF();
+    
         for (String term : input.getQueryTerms()) {
-            TermStats stats = doc.getTermStats().get(term);
+            TermStats stats = termStatsMap != null ? termStatsMap.get(term) : null;
             if (stats != null) {
                 double tf = stats.getTf();
-                double idf = input.getGlobalStats().getTermIDF().getOrDefault(term, 0.0);
+    
+                Double idfObj = termIdfMap != null ? termIdfMap.get(term) : null;
+                double idf = idfObj != null ? idfObj : 0.0;
+    
                 double boost = stats.isInTitle() ? titleBoost : 1.0;
                 score += tf * idf * boost;
             }
         }
         return score;
     }
-
-    public static void main(String[] args) throws Exception {
-        // 1. Parse JSON input
-        ObjectMapper mapper = new ObjectMapper();
-        QueryInput input = mapper.readValue(new File("src/main/resources/query_results.json"),
-                QueryInput.class);
-
-        // 2. Rank documents
-        ParallelRanker ranker = new ParallelRanker();
-        long startTime = System.currentTimeMillis();
-        List<RankedDocument> results = ranker.rank(input);
-        
-        long endTime = System.currentTimeMillis();
-        long duration = endTime - startTime;
-        System.out.println("Operation took " + duration + " milliseconds");
-
-        // 3. Print results
-        System.out.println("Ranked Results:");
-        results.forEach(
-                doc -> System.out.printf("%s: score=%.3f (relevance=%.3f, popularity=%.1f)%n",
-                        doc.getDocId(), doc.getScore(), doc.getRelevance(), doc.getPopularity()));
-    }
+    
+    
 }

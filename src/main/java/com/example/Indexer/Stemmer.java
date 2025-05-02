@@ -4,7 +4,8 @@ import org.apache.lucene.analysis.en.EnglishMinimalStemmer;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-
+import org.springframework.stereotype.Component;
+@Component
 public class Stemmer
 {
     private final EnglishMinimalStemmer stemmer;

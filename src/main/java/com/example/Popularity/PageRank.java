@@ -19,8 +19,8 @@ public class PageRank {
     private static final int MAX_ITERATIONS = 100;
 
     private static final String MONGO_URI = "mongodb+srv://APTteam:s0sapt_proj_s0s325@searchcluster.llposxz.mongodb.net/SearchDB?retryWrites=true&w=majority";
-    private static final String DB_NAME = "SearchDB";
-    private static final String COLLECTION_NAME = "pages";
+    private static final String DB_NAME = "web-crawler";
+    private static final String COLLECTION_NAME = "clean-pages";
 
     public static Map<String, Double> computePageRank(Map<String, List<String>> graph) {
         final int N = graph.size();
@@ -135,7 +135,7 @@ public class PageRank {
     
                 collection.updateOne(
                     new Document("url", url), 
-                    new Document("$set", new Document("Popularity", pageRank)) 
+                    new Document("$set", new Document("popularity", pageRank)) 
                 );
             }
             System.out.println("Updated all documents with PageRank values.");
