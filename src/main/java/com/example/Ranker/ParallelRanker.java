@@ -13,7 +13,7 @@ public class ParallelRanker {
     private final double titleBoost = 2.0;
     private final double alpha = 0.7;
     private final int THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors();
-    private final int PARALLEL_THRESHOLD = 100;
+    private final int PARALLEL_THRESHOLD = 2000;
 
     public List<RankedDocument> rank(QueryInput input) {
         int docCount = input.getCandidateDocuments().size();

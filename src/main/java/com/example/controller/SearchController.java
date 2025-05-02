@@ -23,13 +23,13 @@ public class SearchController {
             @RequestParam String q,
             @RequestParam(defaultValue = "10") int limit
     ) {
-        List<RankedDocument> results = queryProcessor.processQuery(q, limit);
+        List<RankedDocument> results = queryProcessor.processQuery(q);
         return ResponseEntity.ok(results);
     }
 
     @PostMapping
     public ResponseEntity<List<RankedDocument>> searchPost(@RequestBody SearchRequest request) {
-        List<RankedDocument> results = queryProcessor.processQuery(request.getQuery(), request.getLimit());
+        List<RankedDocument> results = queryProcessor.processQuery(request.getQuery());
         return ResponseEntity.ok(results);
     }
 
