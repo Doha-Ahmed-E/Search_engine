@@ -4,7 +4,8 @@ import java.io.*;
 import java.util.*;
 import java.nio.file.*;
 import java.util.stream.Collectors;
-
+import org.springframework.stereotype.Component;
+@Component
 public class StopWords
 {
     private static final Set<String> STOP_WORDS = new HashSet<>();

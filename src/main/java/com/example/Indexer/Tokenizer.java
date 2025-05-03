@@ -4,7 +4,8 @@ import opennlp.tools.tokenize.SimpleTokenizer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-
+import org.springframework.stereotype.Component;
+@Component 
 public class Tokenizer
 {
     private final SimpleTokenizer tokenizer;

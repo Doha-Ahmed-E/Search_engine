@@ -18,6 +18,13 @@ public class TermStats
     {
         this.inTitle = inTitle;
     }
+    public TermStats(boolean inTitle,double tf,double importanceScore)
+    {
+        this.inTitle = inTitle;
+        this.tf = tf;
+        this.importanceScore = importanceScore;
+    }
+
 
     public double getTf()
     {
