@@ -64,17 +64,13 @@ public class Stemmer
     private boolean isNumeric(String str)
     {
         if (str == null || str.isEmpty())
-        {
             return false;
-        }
 
         // Check if the string contains only digits
         for (char c : str.toCharArray())
         {
             if (!Character.isDigit(c))
-            {
                 return false;
-            }
         }
 
         return true;
