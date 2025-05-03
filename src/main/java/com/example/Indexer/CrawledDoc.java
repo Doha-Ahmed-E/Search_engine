@@ -7,12 +7,14 @@ public class CrawledDoc
     private String htmlContent;
     private String mongoId; // Add this field
     private String docId; // Add this field
+    private double popularity;
 
-    public CrawledDoc(String url, String title, String htmlContent)
+    public CrawledDoc(String url, String title, double popularity, String htmlContent)
     {
         this.url = url;
         this.htmlContent = htmlContent;
         this.title = title;
+        this.popularity = popularity;
     }
 
     public String getUrl()
@@ -48,5 +50,15 @@ public class CrawledDoc
     public void setDocId(String docId)
     {
         this.docId = docId;
+    }
+
+    public double getPopularity()
+    {
+        return popularity;
+    }
+
+    public void setPopularity(double popularity)
+    {
+        this.popularity = popularity;
     }
 }
