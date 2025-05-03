@@ -496,7 +496,7 @@ public class Indexer
     public List<CrawledDoc> fetchCrawledDocumentsBatch(int skip, int limit)
     {
         MongoCollection<Document> pagesCollection =
-                DatabaseConnection.getDatabase().getCollection("clean_pages");
+                DatabaseConnection.getDatabase().getCollection("pages");
 
         List<CrawledDoc> documents = Collections.synchronizedList(new ArrayList<>());
         List<String> docIdsToClean = Collections.synchronizedList(new ArrayList<>());
@@ -674,7 +674,7 @@ public class Indexer
         {
             // Process documents in batches to avoid memory issues
             MongoCollection<Document> pagesCollection =
-                    DatabaseConnection.getDatabase().getCollection("clean_pages");
+                    DatabaseConnection.getDatabase().getCollection("pages");
 
             // Get count based on mode
             long totalDocs = pagesCollection.countDocuments();
