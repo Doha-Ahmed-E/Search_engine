@@ -19,10 +19,9 @@ public class PageRank
     private static final double EPSILON = 1e-6;
     private static final int MAX_ITERATIONS = 100;
 
-    private static final String MONGO_URI =
-            "mongodb+srv://APTteam:s0sapt_proj_s0s325@searchcluster.llposxz.mongodb.net/SearchDB?retryWrites=true&w=majority";
-    private static final String DB_NAME = "another_db";
-    private static final String COLLECTION_NAME = "pages";
+    private static final String MONGO_URI = "mongodb+srv://APTteam:s0sapt_proj_s0s325@searchcluster.llposxz.mongodb.net/SearchDB?retryWrites=true&w=majority";
+    private static final String DB_NAME = "web-crawler";
+    private static final String COLLECTION_NAME = "clean-pages";
 
     public static Map<String, Double> computePageRank(Map<String, List<String>> graph)
     {
@@ -155,9 +154,12 @@ public class PageRank
                     System.err.println("WARNING: URL not found in PageRank results: " + url);
                     pageRank = 0.0;
                 }
+                
+                collection.updateOne(
+                    new Document("url", url), 
+                    new Document("$set", new Document("popularity", pageRank)) 
+                );
 
-                collection.updateOne(new Document("url", url),
-                        new Document("$set", new Document("Popularity", pageRank)));
             }
             System.out.println("Updated all documents with PageRank values.");
         }

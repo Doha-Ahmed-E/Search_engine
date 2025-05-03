@@ -7,15 +7,17 @@ import com.example.Indexer.Stemmer;
 import com.example.Indexer.StopWords;
 import com.example.Indexer.Tokenizer;
 import com.example.Ranker.QueryInput;
+import com.example.Ranker.RankedDocument;
+import com.example.Ranker.ParallelRanker;
 import org.bson.Document;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
+import org.springframework.stereotype.Component;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.*;
 import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
+@Component
 public class QueryProcessor
 {
     private final MongoCollection<Document> wordIndexCollection;
@@ -23,305 +25,236 @@ public class QueryProcessor
     private final Tokenizer tokenizer;
     private final StopWords stopWords;
     private final Stemmer stemmer;
-    private final ObjectMapper objectMapper;
+    private final ExecutorService executorService;
+    private final Map<String, Map<String, List<Integer>>> positionCache;
 
     public QueryProcessor()
     {
-        wordIndexCollection = DatabaseConnection.getDatabase().getCollection("inverted_index");
-        documentsCollection = DatabaseConnection.getDatabase().getCollection("documents");
-        tokenizer = new Tokenizer();
-        stopWords = new StopWords();
-        stemmer = new Stemmer();
-        objectMapper = new ObjectMapper();
+        this.wordIndexCollection = DatabaseConnection.getDatabase().getCollection("inverted_index");
+        this.documentsCollection = DatabaseConnection.getDatabase().getCollection("documents");
+        this.tokenizer = new Tokenizer();
+        this.stopWords = new StopWords();
+        this.stemmer = new Stemmer();
+        this.executorService = Executors.newFixedThreadPool(4);
+        this.positionCache = new ConcurrentHashMap<>();
     }
 
-    public QueryInput processQuery(String queryString, int maxResults)
+    public List<RankedDocument> processQuery(String queryString)
     {
         try
         {
-            // Check if we have exactly two phrases with one logical operator between them
-            if (queryString.trim().startsWith("\"") && queryString.trim().endsWith("\""))
+            queryString = queryString.trim();
+            QueryInput queryInput;
+            if (queryString.startsWith("\""))
             {
                 if (isPhraseLogicalQuery(queryString))
-                    return processPhraseLogicalQuery(queryString, maxResults);
-
-                // Handle single phrase query
-                return processPhraseQuery(queryString, maxResults);
+                {
+                    queryInput = processPhraseLogicalQuery(queryString);
+                }
+                else
+                {
+                    queryInput = processPhraseQuery(queryString);
+                }
+            }
+            else
+            {
+                queryInput = processTermQuery(queryString);
             }
 
-            // Handle regular term-based query
-            List<String> queryTerms = preprocessQuery(queryString);
-            QueryInput queryInput = new QueryInput();
-            if (queryTerms.isEmpty())
-                return queryInput;
-
-            queryInput.setQueryTerms(queryTerms);
-            Map<String, Integer> docsContainingTerm = new HashMap<>();
-            Map<String, Double> termIDF = new HashMap<>();
-            GlobalStats globalStats = new GlobalStats();
-            Map<String, QDocument> candidateDocs =
-                    collectDocumentInfo(queryTerms, docsContainingTerm, termIDF, globalStats);
-
-            queryInput.setCandidateDocuments(candidateDocs);
-            queryInput.setGlobalStats(globalStats);
-            return queryInput;
+            ParallelRanker ranker = new ParallelRanker();
+            return ranker.rank(queryInput);
         }
         catch (Exception e)
         {
             e.printStackTrace();
-            return new QueryInput();
+            return new ArrayList<>();
         }
     }
 
-    private boolean isPhraseLogicalQuery(String queryString)
+    private QueryInput processTermQuery(String queryString)
     {
-        // Must contain exactly one logical operator between two phrases
-        boolean and = queryString.contains("AND");
-        boolean or = queryString.contains("OR");
-        boolean not = queryString.contains("NOT");
-        if (!and && !or && !not)
-            return false;
-        // Split into parts
-        String[] parts;
-        if (and)
-        {
-            parts = queryString.split("AND");
-        }
-        else if (or)
-        {
-            parts = queryString.split("OR");
-        }
-        else
-        {
-            parts = queryString.split("NOT");
-        }
-
-        // Must have exactly two parts and both must be phrases
-        return parts.length == 2 && parts[0].trim().startsWith("\"")
-                && parts[0].trim().endsWith("\"") && parts[1].trim().startsWith("\"")
-                && parts[1].trim().endsWith("\"");
-    }
-
-    private QueryInput processPhraseQuery(String queryString, int maxResults)
-    {
+        List<String> queryTerms = preprocessQuery(queryString);
         QueryInput queryInput = new QueryInput();
-        String phrase = queryString.trim().substring(1, queryString.length() - 1).trim();
-        if (phrase.isEmpty())
+        if (queryTerms.isEmpty())
             return queryInput;
 
-        // Preprocess and stem the phrase
-        List<String> phraseTerms = preprocessQuery(phrase);
-        if (phraseTerms.size() < 2)
-            return queryInput;
-        String stemmedPhrase = String.join(" ", phraseTerms);
-
-        // Set the stemmed phrase as the query term
-        List<String> queryTerms = new ArrayList<>();
-        queryTerms.add(stemmedPhrase);
         queryInput.setQueryTerms(queryTerms);
-
         Map<String, Integer> docsContainingTerm = new HashMap<>();
         Map<String, Double> termIDF = new HashMap<>();
         GlobalStats globalStats = new GlobalStats();
-        Map<String, QDocument> allTermDocs =
-                collectDocumentInfo(phraseTerms, docsContainingTerm, termIDF, globalStats);
+        Map<String, QDocument> candidateDocs =
+                collectDocumentInfo(queryTerms, docsContainingTerm, termIDF, globalStats);
 
-        Map<String, QDocument> phraseDocs = new HashMap<>();
-        Set<String> docsWithMetadata = new HashSet<>();
-
-        for (String docId : allTermDocs.keySet())
-        {
-            if (hasExactPhrase(docId, phraseTerms))
-            {
-                QDocument qDoc = allTermDocs.get(docId);
-
-                // Calculate phrase TF (count of exact phrase occurrences)
-                int phraseCount = countExactPhraseOccurrences(docId, phraseTerms);
-                double phraseTf = calculateTf(phraseCount, qDoc.getMetadata().getLength());
-
-                // Add the stemmed phrase as a term with stats
-                TermStats phraseStats = new TermStats(
-                        containsPhraseInTitle(docId, phraseTerms.toArray(new String[0])));
-                phraseStats.setTf(phraseTf);
-                phraseStats.setImportanceScore(calculatePhraseImportance(phraseCount));
-
-                qDoc.getTermStats().put(stemmedPhrase, phraseStats);
-                phraseDocs.put(docId, qDoc);
-
-                if (!docsWithMetadata.contains(docId))
-                {
-                    setDocumentMetadata(qDoc, getDocumentPosting(docId, phraseTerms.get(0)));
-                    docsWithMetadata.add(docId);
-                }
-            }
-        }
-
-        docsContainingTerm.put(stemmedPhrase, phraseDocs.size());
-        termIDF.put(stemmedPhrase,
-                calculatePhraseIDF(phraseDocs.size(), globalStats.getTotalDocs()));
-
-        globalStats.setDocsContainingTerm(docsContainingTerm);
-        globalStats.setTermIDF(termIDF);
-
-        queryInput.setCandidateDocuments(phraseDocs);
+        queryInput.setCandidateDocuments(candidateDocs);
         queryInput.setGlobalStats(globalStats);
         return queryInput;
     }
 
-    private QueryInput processPhraseLogicalQuery(String queryString, int maxResults)
+    private boolean isPhraseLogicalQuery(String queryString)
     {
-        // Split into parts
-        String[] parts;
-        String operator;
+        String trimmed = queryString.trim();
+        int andIndex = trimmed.indexOf(" AND ");
+        int orIndex = trimmed.indexOf(" OR ");
+        int notIndex = trimmed.indexOf(" NOT ");
 
-        if (queryString.contains("AND"))
+        if (andIndex > 0)
+            return isProperlyQuoted(trimmed, andIndex, 5);
+        if (orIndex > 0)
+            return isProperlyQuoted(trimmed, orIndex, 4);
+        if (notIndex > 0)
+            return isProperlyQuoted(trimmed, notIndex, 5);
+        return false;
+    }
+
+    private boolean isProperlyQuoted(String query, int opIndex, int opLength)
+    {
+        String left = query.substring(0, opIndex).trim();
+        String right = query.substring(opIndex + opLength).trim();
+        return left.startsWith("\"") && left.endsWith("\"") && right.startsWith("\"")
+                && right.endsWith("\"");
+    }
+
+    private QueryInput processPhraseQuery(String queryString)
+    {
+        String phrase = queryString.trim().substring(1, queryString.length() - 1).trim();
+        if (phrase.isEmpty())
+            return new QueryInput();
+
+        List<String> phraseTerms = preprocessQuery(phrase);
+        if (phraseTerms.size() < 2)
         {
-            parts = queryString.split("AND");
-            operator = "AND";
+            return processTermQuery(phrase);
         }
-        else if (queryString.contains("OR"))
-        {
-            parts = queryString.split("OR");
-            operator = "OR";
-        }
-        else if (queryString.contains("NOT"))
-        {
-            parts = queryString.split("NOT");
-            operator = "NOT";
-        }
-        else
+
+        Set<String> commonDocIds = findDocumentsWithAllTerms(phraseTerms);
+        if (commonDocIds.isEmpty())
         {
             return new QueryInput();
         }
 
-        // Trim and remove quotes
-        String leftPhrase = parts[0].trim().substring(1, parts[0].trim().length() - 1);
-        String rightPhrase = parts[1].trim().substring(1, parts[1].trim().length() - 1);
+        Map<String, Map<String, List<Integer>>> termPositionsMap =
+                fetchTermPositions(phraseTerms, commonDocIds);
+        Map<String, QDocument> phraseDocs =
+                findExactPhraseMatches(phraseTerms, commonDocIds, termPositionsMap);
 
-        // Preprocess and stem both phrases
-        List<String> leftPhraseTerms = preprocessQuery(leftPhrase);
-        List<String> rightPhraseTerms = preprocessQuery(rightPhrase);
-
-        String stemmedLeftPhrase = String.join(" ", leftPhraseTerms);
-        String stemmedRightPhrase = String.join(" ", rightPhraseTerms);
-
-        // Process both phrases
-        QueryInput leftInput = processPhraseQuery("\"" + leftPhrase + "\"", maxResults);
-        QueryInput rightInput = processPhraseQuery("\"" + rightPhrase + "\"", maxResults);
-
-        Map<String, QDocument> leftDocs = leftInput.getCandidateDocuments();
-        Map<String, QDocument> rightDocs = rightInput.getCandidateDocuments();
-
-        Map<String, QDocument> resultDocs = new HashMap<>();
-        GlobalStats globalStats = leftInput.getGlobalStats();
-
-        switch (operator)
-        {
-            case "AND":
-                // Intersection of both phrase results
-                for (String docId : leftDocs.keySet())
-                {
-                    if (rightDocs.containsKey(docId))
-                    {
-                        QDocument mergedDoc =
-                                mergeDocuments(leftDocs.get(docId), rightDocs.get(docId));
-                        resultDocs.put(docId, mergedDoc);
-                    }
-                }
-                break;
-            case "OR":
-                // Union of both phrase results
-                resultDocs.putAll(leftDocs);
-                for (String docId : rightDocs.keySet())
-                {
-                    if (resultDocs.containsKey(docId))
-                    {
-                        QDocument mergedDoc =
-                                mergeDocuments(resultDocs.get(docId), rightDocs.get(docId));
-                        resultDocs.put(docId, mergedDoc);
-                    }
-                    else
-                    {
-                        resultDocs.put(docId, rightDocs.get(docId));
-                    }
-                }
-                break;
-            case "NOT":
-                // Documents in left phrase but not in right phrase
-                for (String docId : leftDocs.keySet())
-                {
-                    if (!rightDocs.containsKey(docId))
-                    {
-                        resultDocs.put(docId, leftDocs.get(docId));
-                    }
-                }
-                break;
-        }
-
-        // Set query terms to include only the stemmed phrases
-        List<String> queryTerms = new ArrayList<>();
-        queryTerms.add(stemmedLeftPhrase);
-        queryTerms.add(stemmedRightPhrase);
-
-        // Update docs containing term and IDF values
-        Map<String, Integer> docsContainingTerm = new HashMap<>();
-        Map<String, Double> termIDF = new HashMap<>();
-
-        docsContainingTerm.putAll(leftInput.getGlobalStats().getDocsContainingTerm());
-        docsContainingTerm.putAll(rightInput.getGlobalStats().getDocsContainingTerm());
-
-        termIDF.putAll(leftInput.getGlobalStats().getTermIDF());
-        termIDF.putAll(rightInput.getGlobalStats().getTermIDF());
-
-        globalStats.setDocsContainingTerm(docsContainingTerm);
-        globalStats.setTermIDF(termIDF);
-
-        QueryInput result = new QueryInput();
-        result.setQueryTerms(queryTerms);
-        result.setCandidateDocuments(resultDocs);
-        result.setGlobalStats(globalStats);
-
-        return result;
+        return buildQueryInput(phraseTerms, phraseDocs);
     }
 
-    private int countExactPhraseOccurrences(String docId, List<String> phraseTerms)
+    private Set<String> findDocumentsWithAllTerms(List<String> terms)
     {
-        Map<String, List<Integer>> termPositions = new HashMap<>();
+        Set<String> commonDocIds = null;
 
-        // Get positions for all terms in the phrase
-        for (String term : phraseTerms)
+        for (String term : terms)
         {
-            Document wordDoc = wordIndexCollection.find(
-                    Filters.and(Filters.eq("word", term), Filters.eq("postings.doc_id", docId)))
-                    .first();
+            Document wordDoc = wordIndexCollection.find(Filters.eq("word", term))
+                    .projection(new Document("postings.doc_id", 1)).first();
 
             if (wordDoc == null)
-                return 0;
+                return Collections.emptySet();
 
-            List<Document> postings = wordDoc.getList("postings", Document.class);
-            for (Document posting : postings)
+            Set<String> termDocIds = wordDoc.getList("postings", Document.class).stream()
+                    .map(posting -> posting.getString("doc_id")).collect(Collectors.toSet());
+
+            if (commonDocIds == null)
             {
-                if (docId.equals(posting.getString("doc_id")))
-                {
-                    termPositions.put(term, posting.getList("positions", Integer.class));
+                commonDocIds = new HashSet<>(termDocIds);
+            }
+            else
+            {
+                commonDocIds.retainAll(termDocIds);
+                if (commonDocIds.isEmpty())
                     break;
-                }
             }
         }
 
-        if (termPositions.size() != phraseTerms.size())
+        return commonDocIds != null ? commonDocIds : Collections.emptySet();
+    }
+
+    private Map<String, Map<String, List<Integer>>> fetchTermPositions(List<String> terms,
+            Set<String> docIds)
+    {
+        Map<String, Map<String, List<Integer>>> termPositionsMap = new HashMap<>();
+        List<Future<?>> futures = new ArrayList<>();
+
+        for (String term : terms)
+        {
+            futures.add(executorService.submit(() -> {
+                Map<String, List<Integer>> positions = positionCache.computeIfAbsent(term, k -> {
+                    Document wordDoc = wordIndexCollection.find(Filters.eq("word", term))
+                            .projection(new Document("postings.doc_id", 1)
+                                    .append("postings.positions", 1))
+                            .first();
+
+                    if (wordDoc == null)
+                        return Collections.emptyMap();
+
+                    return wordDoc.getList("postings", Document.class).stream()
+                            .filter(posting -> docIds.contains(posting.getString("doc_id")))
+                            .collect(Collectors.toMap(posting -> posting.getString("doc_id"),
+                                    posting -> posting.getList("positions", Integer.class)));
+                });
+
+                synchronized (termPositionsMap)
+                {
+                    termPositionsMap.put(term, positions);
+                }
+            }));
+        }
+
+        for (Future<?> future : futures)
+        {
+            try
+            {
+                future.get();
+            }
+            catch (InterruptedException | ExecutionException e)
+            {
+                Thread.currentThread().interrupt();
+                return Collections.emptyMap();
+            }
+        }
+
+        return termPositionsMap;
+    }
+
+    private Map<String, QDocument> findExactPhraseMatches(List<String> phraseTerms,
+            Set<String> docIds, Map<String, Map<String, List<Integer>>> termPositionsMap)
+    {
+        Map<String, QDocument> phraseDocs = new ConcurrentHashMap<>();
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (String docId : docIds)
+        {
+            futures.add(CompletableFuture.runAsync(() -> {
+                int phraseCount = countExactPhraseOccurrences(phraseTerms, termPositionsMap, docId);
+                if (phraseCount > 0)
+                {
+                    QDocument qDoc = createPhraseDocument(docId, phraseTerms, phraseCount);
+                    phraseDocs.put(docId, qDoc);
+                }
+            }, executorService));
+        }
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        return phraseDocs;
+    }
+
+    private int countExactPhraseOccurrences(List<String> phraseTerms,
+            Map<String, Map<String, List<Integer>>> termPositionsMap, String docId)
+    {
+        List<Integer> firstTermPositions = termPositionsMap.get(phraseTerms.get(0)).get(docId);
+        if (firstTermPositions == null)
             return 0;
 
-        // Count exact phrase occurrences
         int count = 0;
-        List<Integer> firstTermPositions = termPositions.get(phraseTerms.get(0));
         for (int pos : firstTermPositions)
         {
             boolean match = true;
             for (int i = 1; i < phraseTerms.size(); i++)
             {
-                int expectedPos = pos + i;
-                if (!termPositions.get(phraseTerms.get(i)).contains(expectedPos))
+                List<Integer> positions = termPositionsMap.get(phraseTerms.get(i)).get(docId);
+                if (positions == null || !positions.contains(pos + i))
                 {
                     match = false;
                     break;
@@ -333,98 +266,192 @@ public class QueryProcessor
         return count;
     }
 
-    private boolean containsPhraseInTitle(String docId, String[] originalTerms)
+    private QDocument createPhraseDocument(String docId, List<String> phraseTerms, int phraseCount)
     {
-        Document doc = documentsCollection.find(Filters.eq("doc_id", docId)).first();
-        if (doc == null)
-            return false;
+        QDocument qDoc = new QDocument();
+        String stemmedPhrase = String.join(" ", phraseTerms);
 
-        String title = doc.getString("title");
-        if (title == null)
-            return false;
+        Document doc =
+                documentsCollection
+                        .find(Filters.eq("doc_id", docId)).projection(new Document("url", 1)
+                                .append("length", 1).append("timestamp", 1).append("title", 1))
+                        .first();
 
-        String titleLower = title.toLowerCase();
-        String originalPhrase = String.join(" ", originalTerms);
-        return titleLower.contains(originalPhrase.toLowerCase());
+        if (doc != null)
+        {
+            Metadata metadata = new Metadata();
+            metadata.setUrl(doc.getString("url"));
+            metadata.setPopularity(0.5);
+            metadata.setLength(doc.getInteger("length", 0));
+            Long timestamp = doc.getLong("timestamp");
+            metadata.setPublishDate(timestamp != null
+                    ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(timestamp))
+                    : "");
+            qDoc.setMetadata(metadata);
+
+            String title = doc.getString("title");
+            boolean inTitle = title != null
+                    && title.toLowerCase().contains(String.join(" ", phraseTerms).toLowerCase());
+
+            double phraseTf = calculateTf(phraseCount, metadata.getLength());
+            TermStats phraseStats = new TermStats(inTitle);
+            phraseStats.setTf(phraseTf);
+            phraseStats.setImportanceScore(calculatePhraseImportance(phraseCount));
+
+            Map<String, TermStats> termStats = new HashMap<>();
+            termStats.put(stemmedPhrase, phraseStats);
+            qDoc.setTermStats(termStats);
+        }
+
+        return qDoc;
+    }
+
+    private QueryInput buildQueryInput(List<String> phraseTerms, Map<String, QDocument> phraseDocs)
+    {
+        QueryInput queryInput = new QueryInput();
+        String stemmedPhrase = String.join(" ", phraseTerms);
+        queryInput.setQueryTerms(Collections.singletonList(stemmedPhrase));
+
+        GlobalStats globalStats = new GlobalStats();
+        globalStats.setTotalDocs((int) documentsCollection.countDocuments());
+
+        Map<String, Integer> docsContainingTerm = new HashMap<>();
+        Map<String, Double> termIDF = new HashMap<>();
+
+        for (String term : phraseTerms)
+        {
+            Document wordDoc = wordIndexCollection.find(Filters.eq("word", term))
+                    .projection(new Document("doc_count", 1).append("idf", 1)).first();
+
+            if (wordDoc != null)
+            {
+                docsContainingTerm.put(term, wordDoc.getInteger("doc_count"));
+                termIDF.put(term, wordDoc.getDouble("idf"));
+            }
+        }
+
+        docsContainingTerm.put(stemmedPhrase, phraseDocs.size());
+        termIDF.put(stemmedPhrase,
+                calculatePhraseIDF(phraseDocs.size(), globalStats.getTotalDocs()));
+
+        globalStats.setDocsContainingTerm(docsContainingTerm);
+        globalStats.setTermIDF(termIDF);
+        queryInput.setGlobalStats(globalStats);
+        queryInput.setCandidateDocuments(phraseDocs);
+
+        return queryInput;
+    }
+
+    private QueryInput processPhraseLogicalQuery(String queryString)
+    {
+        String[] parts;
+        String operator;
+
+        if (queryString.contains(" AND "))
+        {
+            parts = queryString.split(" AND ");
+            operator = "AND";
+        }
+        else if (queryString.contains(" OR "))
+        {
+            parts = queryString.split(" OR ");
+            operator = "OR";
+        }
+        else if (queryString.contains(" NOT "))
+        {
+            parts = queryString.split(" NOT ");
+            operator = "NOT";
+        }
+        else
+        {
+            return new QueryInput();
+        }
+
+        CompletableFuture<QueryInput> leftFuture = CompletableFuture
+                .supplyAsync(() -> processPhraseQuery(parts[0].trim()), executorService);
+        CompletableFuture<QueryInput> rightFuture = CompletableFuture
+                .supplyAsync(() -> processPhraseQuery(parts[1].trim()), executorService);
+
+        try
+        {
+            QueryInput leftInput = leftFuture.get();
+            QueryInput rightInput = rightFuture.get();
+
+            return combineLogicalResults(leftInput, rightInput, operator);
+        }
+        catch (InterruptedException | ExecutionException e)
+        {
+            Thread.currentThread().interrupt();
+            return new QueryInput();
+        }
+    }
+
+    private QueryInput combineLogicalResults(QueryInput leftInput, QueryInput rightInput,
+            String operator)
+    {
+        Map<String, QDocument> leftDocs = leftInput.getCandidateDocuments();
+        Map<String, QDocument> rightDocs = rightInput.getCandidateDocuments();
+        Map<String, QDocument> resultDocs = new HashMap<>();
+
+        switch (operator)
+        {
+            case "AND":
+                leftDocs.keySet().stream().filter(rightDocs::containsKey)
+                        .forEach(docId -> resultDocs.put(docId,
+                                mergeDocuments(leftDocs.get(docId), rightDocs.get(docId))));
+                break;
+            case "OR":
+                resultDocs.putAll(leftDocs);
+                rightDocs.forEach(
+                        (docId, doc) -> resultDocs.merge(docId, doc, this::mergeDocuments));
+                break;
+            case "NOT":
+                leftDocs.keySet().stream().filter(docId -> !rightDocs.containsKey(docId))
+                        .forEach(docId -> resultDocs.put(docId, leftDocs.get(docId)));
+                break;
+        }
+
+        QueryInput result = new QueryInput();
+        result.setQueryTerms(combineQueryTerms(leftInput, rightInput));
+        result.setCandidateDocuments(resultDocs);
+        result.setGlobalStats(combineGlobalStats(leftInput, rightInput));
+
+        return result;
+    }
+
+    private List<String> combineQueryTerms(QueryInput left, QueryInput right)
+    {
+        List<String> combined = new ArrayList<>(left.getQueryTerms());
+        combined.addAll(right.getQueryTerms());
+        return combined;
+    }
+
+    private GlobalStats combineGlobalStats(QueryInput left, QueryInput right)
+    {
+        GlobalStats combined = new GlobalStats();
+        combined.setTotalDocs(left.getGlobalStats().getTotalDocs());
+
+        Map<String, Integer> docsContainingTerm = new HashMap<>();
+        docsContainingTerm.putAll(left.getGlobalStats().getDocsContainingTerm());
+        docsContainingTerm.putAll(right.getGlobalStats().getDocsContainingTerm());
+        combined.setDocsContainingTerm(docsContainingTerm);
+
+        Map<String, Double> termIDF = new HashMap<>();
+        termIDF.putAll(left.getGlobalStats().getTermIDF());
+        termIDF.putAll(right.getGlobalStats().getTermIDF());
+        combined.setTermIDF(termIDF);
+
+        return combined;
     }
 
     private double calculateTf(int termCount, int docLength)
     {
-        if (docLength == 0)
-            return 0; // Avoid division by zero
-        return (double) termCount / docLength;
+        return docLength == 0 ? 0 : (double) termCount / docLength;
     }
 
     private double calculatePhraseImportance(int phraseCount)
     {
-        // Higher importance for documents with more phrase occurrences
         return 1.0 + (0.1 * phraseCount);
-    }
-
-    private boolean hasExactPhrase(String docId, List<String> phraseTerms)
-    {
-        Map<String, List<Integer>> termPositions = new HashMap<>();
-
-        for (String term : phraseTerms)
-        {
-            Document wordDoc = wordIndexCollection.find(
-                    Filters.and(Filters.eq("word", term), Filters.eq("postings.doc_id", docId)))
-                    .first();
-
-            if (wordDoc == null)
-                return false;
-
-            List<Document> postings = wordDoc.getList("postings", Document.class);
-            for (Document posting : postings)
-            {
-                if (docId.equals(posting.getString("doc_id")))
-                {
-                    termPositions.put(term, posting.getList("positions", Integer.class));
-                    break;
-                }
-            }
-        }
-
-        if (termPositions.size() != phraseTerms.size())
-            return false;
-
-        List<Integer> firstTermPositions = termPositions.get(phraseTerms.get(0));
-        for (int pos : firstTermPositions)
-        {
-            boolean match = true;
-            for (int i = 1; i < phraseTerms.size(); i++)
-            {
-                int expectedPos = pos + i;
-                if (!termPositions.get(phraseTerms.get(i)).contains(expectedPos))
-                {
-                    match = false;
-                    break;
-                }
-            }
-            if (match)
-                return true;
-        }
-        return false;
-    }
-
-    private Document getDocumentPosting(String docId, String term)
-    {
-        Document wordDoc = wordIndexCollection
-                .find(Filters.and(Filters.eq("word", term), Filters.eq("postings.doc_id", docId)))
-                .first();
-
-        if (wordDoc != null)
-        {
-            List<Document> postings = wordDoc.getList("postings", Document.class);
-            for (Document posting : postings)
-            {
-                if (docId.equals(posting.getString("doc_id")))
-                {
-                    return posting;
-                }
-            }
-        }
-        return null;
     }
 
     private double calculatePhraseIDF(int docsWithPhrase, int totalDocs)
@@ -435,11 +462,8 @@ public class QueryProcessor
     private QDocument mergeDocuments(QDocument doc1, QDocument doc2)
     {
         QDocument merged = new QDocument();
-
-        // Merge metadata (prefer doc1's metadata)
         merged.setMetadata(doc1.getMetadata());
 
-        // Merge term stats
         Map<String, TermStats> mergedStats = new HashMap<>();
         if (doc1.getTermStats() != null)
         {
@@ -451,7 +475,6 @@ public class QueryProcessor
             {
                 if (mergedStats.containsKey(entry.getKey()))
                 {
-                    // If term exists in both, keep the one with higher TF
                     TermStats existing = mergedStats.get(entry.getKey());
                     if (entry.getValue().getTf() > existing.getTf())
                     {
@@ -478,7 +501,9 @@ public class QueryProcessor
         {
             String stemmed = stemmer.stem(token);
             if (stemmed != null && !stemmed.isEmpty())
+            {
                 stemmedTokens.add(stemmed);
+            }
         }
         return stemmedTokens;
     }
@@ -505,7 +530,20 @@ public class QueryProcessor
             for (Document posting : postings)
             {
                 String docId = posting.getString("doc_id");
-                QDocument qDoc = processTermStatistics(candidateDocs, term, docId, posting);
+                QDocument qDoc = candidateDocs.computeIfAbsent(docId, k -> new QDocument());
+
+                Map<String, TermStats> termInfoMap = qDoc.getTermStats();
+                if (termInfoMap == null)
+                {
+                    termInfoMap = new HashMap<>();
+                    qDoc.setTermStats(termInfoMap);
+                }
+
+                TermStats termStats = new TermStats(posting.getBoolean("in_title"));
+                termStats.setTf(posting.getDouble("tf"));
+                termStats.setImportanceScore(posting.getDouble("importance_score"));
+                termInfoMap.put(term, termStats);
+
                 if (!docsWithMetadata.contains(docId))
                 {
                     setDocumentMetadata(qDoc, posting);
@@ -518,23 +556,6 @@ public class QueryProcessor
         globalStats.setDocsContainingTerm(docsContainingTerm);
         globalStats.setTermIDF(termIDF);
         return candidateDocs;
-    }
-
-    private QDocument processTermStatistics(Map<String, QDocument> candidateDocs, String term,
-            String docId, Document posting)
-    {
-        QDocument qDoc = candidateDocs.computeIfAbsent(docId, k -> new QDocument());
-        Map<String, TermStats> termInfoMap = qDoc.getTermStats();
-        if (termInfoMap == null)
-        {
-            termInfoMap = new HashMap<>();
-            qDoc.setTermStats(termInfoMap);
-        }
-        TermStats termStats = new TermStats(posting.getBoolean("in_title"));
-        termStats.setTf(posting.getDouble("tf"));
-        termStats.setImportanceScore(posting.getDouble("importance_score"));
-        termInfoMap.put(term, termStats);
-        return qDoc;
     }
 
     private void setDocumentMetadata(QDocument qDoc, Document posting)
@@ -561,10 +582,6 @@ public class QueryProcessor
         metadata.setSnippet(snippet);
         metadata.setLength(posting.getInteger("length", 0));
         Long timestamp = posting.getLong("timestamp");
-        if (timestamp != null)
-            metadata.setPublishDate(new SimpleDateFormat("yyyy-MM-dd").format(new Date(timestamp)));
-        else
-            metadata.setPublishDate("");
 
         qDoc.setMetadata(metadata);
     }
@@ -603,148 +620,4 @@ public class QueryProcessor
         return String.join(" ", Arrays.copyOfRange(words, bestStart, end));
     }
 
-    public void saveQueryResponseToFile(String query, String filename)
-    {
-        try
-        {
-            QueryInput result = processQuery(query, 10);
-            // Add a timestamp to the response for reference
-            Map<String, Object> response = new HashMap<>();
-            response.put("query", query);
-            response.put("timestamp", new Date());
-            response.put("result", result);
-
-            objectMapper.enable(SerializationFeature.INDENT_OUTPUT); // Pretty print for easier
-                                                                     // reading
-            objectMapper.writeValue(new File(filename), response);
-            System.out.println("Query response saved to " + filename);
-        }
-        catch (IOException e)
-        {
-            e.printStackTrace();
-        }
-    }
-
-    //////////////////////////////////////////////////////////////////////////////////////////////////////// 7
-    /// Methods for testing and printing results
-    public static void main(String[] args)
-    {
-        try
-        {
-            QueryProcessor processor = new QueryProcessor();
-            String query = args.length > 0 ? args[0] : "get your career started in data science";
-
-            System.out.println("\nProcessing query: \"" + query + "\"");
-            long startTime = System.currentTimeMillis();
-            QueryInput result = processor.processQuery(query, 10);
-            long endTime = System.currentTimeMillis();
-
-            System.out.println("Query processing time: " + (endTime - startTime) + "ms\n");
-            printQueryResults(result);
-
-            String filename = "query_result_" + System.currentTimeMillis() + ".json";
-            processor.saveQueryResponseToFile(query, filename);
-            System.out.println("\nDetailed results saved to: " + filename);
-        }
-        catch (Exception e)
-        {
-            System.err.println("Error processing query: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    private static void printQueryResults(QueryInput result)
-    {
-        System.out.println("Query terms: " + result.getQueryTerms());
-        GlobalStats stats = result.getGlobalStats();
-        System.out.println("\nGlobal statistics:");
-        System.out.println("  Total documents: " + stats.getTotalDocs());
-        System.out.println("  Documents containing terms:");
-
-        if (stats.getDocsContainingTerm() != null)
-        {
-            stats.getDocsContainingTerm()
-                    .forEach((k, v) -> System.out.println("    " + k + ": " + v + " docs"));
-        }
-
-        System.out.println("  Term IDF values:");
-        if (stats.getTermIDF() != null)
-        {
-            stats.getTermIDF().forEach((k, v) -> System.out.println("    " + k + ": " + v));
-        }
-
-        Map<String, QDocument> docs = result.getCandidateDocuments();
-        System.out.println("\nFound " + (docs != null ? docs.size() : 0) + " candidate documents:");
-
-        if (docs != null && !docs.isEmpty())
-        {
-            int count = 0;
-            for (Map.Entry<String, QDocument> entry : docs.entrySet())
-            {
-                if (++count > 5 && docs.size() > 5)
-                {
-                    System.out.println("\n...and " + (docs.size() - 5) + " more documents");
-                    break;
-                }
-                printDocumentDetails(count, entry);
-            }
-        }
-        else
-        {
-            System.out.println("No matching documents found.");
-        }
-    }
-
-    private static void printDocumentDetails(int count, Map.Entry<String, QDocument> entry)
-    {
-        System.out.println("\n" + count + ". Document: " + entry.getKey());
-        QDocument doc = entry.getValue();
-        Metadata metadata = doc.getMetadata();
-
-        if (metadata != null)
-        {
-            // Print title with proper formatting
-            String title = metadata.getTitle();
-            if (title != null && !title.isEmpty())
-            {
-                System.out.println("   Title: "
-                        + (title.length() > 60 ? title.substring(0, 57) + "..." : title));
-            }
-            else
-            {
-                System.out.println("   Title: [No title available]");
-            }
-
-            // Print URL
-            System.out.println("   URL: " + metadata.getUrl());
-
-            // Print popularity and other metadata
-            System.out.println("   Popularity: " + String.format("%.2f", metadata.getPopularity()));
-            System.out.println("   Length: " + metadata.getLength() + " words");
-
-            // Print date if available
-            if (metadata.getPublishDate() != null && !metadata.getPublishDate().isEmpty())
-            {
-                System.out.println("   Publish date: " + metadata.getPublishDate());
-            }
-
-            // Print snippet with proper formatting
-            String snippet = metadata.getSnippet();
-            if (snippet != null && !snippet.isEmpty())
-            {
-                // Remove HTML formatting for console display
-                snippet = snippet.replaceAll("<b>", "*").replaceAll("</b>", "*");
-                System.out.println("   Snippet: " + snippet);
-            }
-        }
-
-        if (doc.getTermStats() != null && !doc.getTermStats().isEmpty())
-        {
-            System.out.println("   Term statistics:");
-            doc.getTermStats()
-                    .forEach((k, v) -> System.out.println("     " + k + ": tf="
-                            + String.format("%.4f", v.getTf()) + ", inTitle=" + v.isInTitle()
-                            + ", importance=" + String.format("%.2f", v.getImportanceScore())));
-        }
-    }
 }
