@@ -50,7 +50,7 @@ public class WebCrawler
         this.MAX_PAGES = maxPages;
         this.THREAD_COUNT = threadCount;
         DEFAULT_SEEDS_FILE = seedsFile;
-        this.collection = DatabaseConnection.getDatabase().getCollection("clean_pages");
+        this.collection = DatabaseConnection.getDatabase().getCollection("pages");
 
         // load seed URLs from file and add them to the queue
         List<String> seedUrls = loadSeedsFromFile(DEFAULT_SEEDS_FILE);
@@ -548,7 +548,7 @@ public class WebCrawler
     // Main method to run the crawler
     public static void main(String[] args)
     {
-        int maxPages = 600; // Maximum pages to save
+        int maxPages = 10; // Maximum pages to save
         int availableProcessors = Runtime.getRuntime().availableProcessors();
         int threadCount = Math.min(availableProcessors, 12);
         String seedsFile = "data/seeds.txt"; // Path to the seed URLs file

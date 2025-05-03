@@ -27,6 +27,7 @@ public class Indexer
     private final MongoCollection<Document> invertedIndexCollection;
     private final MongoCollection<Document> documentsCollection;
     private final MongoCollection<Document> forwardIndexCollection;
+    private final MongoCollection<Document> pagesCollection;
     private final AtomicInteger docIdCounter = new AtomicInteger(0);
     private final Tokenizer tokenizer;
     private final StopWords stopWords;
@@ -37,18 +38,19 @@ public class Indexer
     private static final double BODY_WEIGHT = 1.0;
     private static long totalDocs = 0;
 
+    // Constructor initializes collections and indexes
     public Indexer()
     {
         this.invertedIndexCollection =
                 DatabaseConnection.getDatabase().getCollection("inverted_index");
         this.forwardIndexCollection =
                 DatabaseConnection.getDatabase().getCollection("forward_index");
-
         this.documentsCollection = DatabaseConnection.getDatabase().getCollection("documents");
+        this.pagesCollection = DatabaseConnection.getDatabase().getCollection("pages");
         this.tokenizer = new Tokenizer();
         this.stopWords = new StopWords();
         this.stemmer = new Stemmer();
-        long count = documentsCollection.countDocuments();
+        long count = pagesCollection.countDocuments();
         System.out.println("Total documents in collection: " + count);
 
         // Create indexes for fast retrieval
@@ -59,31 +61,22 @@ public class Indexer
         // Find highest existing document ID
         Document highestIdDoc =
                 documentsCollection.find().sort(new Document("doc_id", -1)).limit(1).first();
-
         if (highestIdDoc != null)
         {
             String highestId = highestIdDoc.getString("doc_id");
             if (highestId != null && highestId.startsWith("doc_"))
             {
-                try
-                {
-                    int id = Integer.parseInt(highestId.substring(4));
-                    docIdCounter.set(id);
-                    System.out.println("Initialized document counter to: " + id);
-                }
-                catch (NumberFormatException e)
-                {
-                    System.out.println("Using default document counter");
-                }
+                int id = Integer.parseInt(highestId.substring(4));
+                docIdCounter.set(id);
             }
         }
     }
 
+    // Index documents in parallel using ExecutorService
     public void indexDocuments(List<CrawledDoc> crawledDocs)
     {
         int processorCount = Runtime.getRuntime().availableProcessors();
         ExecutorService executor = Executors.newWorkStealingPool(processorCount);
-        totalDocs = crawledDocs.size();
 
         System.out.println("Starting indexing with " + processorCount + " threads...");
 
@@ -104,8 +97,8 @@ public class Indexer
         executor.shutdown();
         try
         {
-            // Wait for all tasks to complete or timeout after 1 hour
-            boolean finished = executor.awaitTermination(1, TimeUnit.HOURS);
+            // Wait for all tasks to complete or timeout after 2 hours
+            boolean finished = executor.awaitTermination(2, TimeUnit.HOURS);
             if (!finished)
                 System.out.println("Indexing timed out before completion");
         }
@@ -117,6 +110,7 @@ public class Indexer
         System.out.println("Indexing completed. Total documents indexed: " + docIdCounter.get());
     }
 
+    // Index a single document
     private void indexSingleDocument(CrawledDoc crawledDoc)
     {
         try
@@ -124,27 +118,20 @@ public class Indexer
             String url = crawledDoc.getUrl();
             String htmlContent = crawledDoc.getHtmlContent();
             String title = crawledDoc.getTitle();
+            double popularity = crawledDoc.getPopularity();
 
-            // Add null checks for critical data
+            // Check for null or empty content
             if (htmlContent == null || htmlContent.isEmpty())
-            {
-                System.err.println("Empty HTML content for: " + url);
                 return;
-            }
-
-            String contentHash = PageHasher.generateHash(htmlContent);
-            long timestamp = System.currentTimeMillis();
 
             // Check for duplicates
+            String contentHash = PageHasher.generateHash(htmlContent);
             Document existingDoc =
                     documentsCollection.find(Filters.eq("content_hash", contentHash)).first();
             if (existingDoc != null)
-            {
-                System.out.println("Document already indexed, skipping: " + url);
                 return;
-            }
 
-            // Parse HTML content with error handling
+            // Parse HTML content
             org.jsoup.nodes.Document doc;
             try
             {
@@ -155,7 +142,6 @@ public class Indexer
                 System.err.println("Failed to parse HTML for: " + url + " - " + e.getMessage());
                 return;
             }
-
             String docId = "doc_" + docIdCounter.incrementAndGet();
 
             // Extract words and compute statistics
@@ -169,13 +155,6 @@ public class Indexer
                 totalWords += processText(title, TITLE_WEIGHT, wordStats, globalPosition);
                 globalPosition = totalWords;
             }
-            else
-            {
-                System.out.println("Warning: No title for document: " + url);
-                // Try to extract title from HTML if missing
-                title = doc.title();
-            }
-
             // Process headers (h1–h6)
             for (int i = 1; i <= 6; i++)
             {
@@ -187,36 +166,31 @@ public class Indexer
                     globalPosition = totalWords;
                 }
             }
-
             // Process body text with null check
             if (doc.body() != null)
-            {
                 totalWords +=
                         processText(doc.body().text(), BODY_WEIGHT, wordStats, globalPosition);
-            }
 
             // Skip documents with no extracted content
             if (totalWords == 0 || wordStats.isEmpty())
-            {
-                System.out.println("Skipping document with no content: " + url);
                 return;
-            }
 
             // Save document metadata
             Document docEntry = new Document().append("doc_id", docId)
-                    .append("content_hash", contentHash).append("url", url).append("title", title);
+                    .append("content_hash", contentHash).append("url", url).append("title", title)
+                    .append("processed_text", extractCleanText(doc))
+                    .append("popularity", popularity).append("indexed_at", new Date());
 
             documentsCollection.insertOne(docEntry);
 
             // Update word index with TF
+            long timestamp = System.currentTimeMillis();
             updateWordIndex(docId, url, title, wordStats, totalWords, timestamp);
-
             System.out.println("Indexed document: " + url + " (ID: " + docId + ")");
 
+            // Update forward index and mark page as indexed
             if (crawledDoc.getMongoId() != null)
             {
-                MongoCollection<Document> pagesCollection =
-                        DatabaseConnection.getDatabase().getCollection("clean_pages");
                 pagesCollection.updateOne(
                         Filters.eq("_id", new org.bson.types.ObjectId(crawledDoc.getMongoId())),
                         new Document("$set",
@@ -232,6 +206,7 @@ public class Indexer
         }
     }
 
+    // Process text to extract words
     private int processText(String text, double weight, Map<String, WordStats> wordStats,
             int startPosition)
     {
@@ -269,10 +244,10 @@ public class Indexer
                 System.err.println("Error processing token '" + token + "': " + e.getMessage());
             }
         }
-
         return wordCount;
     }
 
+    // Update the inverted index with word statistics
     private void updateWordIndex(String docId, String url, String title,
             Map<String, WordStats> wordStats, int totalWords, long timestamp)
     {
@@ -287,11 +262,11 @@ public class Indexer
         }
 
         List<WriteModel<Document>> bulkOperations = new ArrayList<>();
-
         List<String> wordsForDocument = new ArrayList<>(wordStats.keySet());
         forwardIndexCollection
                 .insertOne(new Document("doc_id", docId).append("words", wordsForDocument));
 
+        // Update the inverted index with word statistics
         for (Map.Entry<String, WordStats> entry : wordStats.entrySet())
         {
             String word = entry.getKey();
@@ -301,13 +276,16 @@ public class Indexer
             // Calculate TF: frequency / total_words
             double tf = totalWords > 0 ? (double) stats.getFrequency() / totalWords : 0.0;
 
+            // create a new document for the posting
             Document posting = new Document().append("doc_id", docId).append("url", url)
                     .append("in_title", inTitle).append("frequency", stats.getFrequency())
                     .append("tf", tf).append("importance_score", stats.getImportanceScore())
                     .append("length", totalWords).append("timestamp", timestamp)
                     .append("positions", stats.getPositions());
 
-            // Instead of immediate update, add to bulk operations
+            // for new words, create a new entry in the inverted index
+            // for existing words, update the postings array
+            // add to bulk operations
             bulkOperations
                     .add(new UpdateOneModel<>(Filters.eq("word", word),
                             new Document("$push", new Document("postings", posting)).append("$inc",
@@ -323,13 +301,20 @@ public class Indexer
         }
     }
 
+    // Compute IDF for a word based on the number of documents containing it
     private double computeIdf(int docsWithTerm)
     {
-        return Math.log((double) totalDocs / (1 + docsWithTerm));
+        double idf = Math.log((double) totalDocs / (1 + docsWithTerm));
+        return idf;
     }
 
+    // Compute and store IDF values for all words in the inverted index
     private void computeAndStoreIdfValues()
     {
+        // Get the actual total document count from the database
+        totalDocs = documentsCollection.countDocuments();
+        System.out.println("Computing IDF values based on " + totalDocs + " total documents");
+
         AtomicBoolean connectionActive = new AtomicBoolean(true);
         int processorCount = Runtime.getRuntime().availableProcessors();
         ExecutorService executor = Executors.newFixedThreadPool(processorCount);
@@ -351,7 +336,7 @@ public class Indexer
             {
                 try
                 {
-                    // Wait a bit before each check
+                    // Wait a bit before each check to avoid busy waiting
                     Thread.sleep(500);
 
                     // Move items from queue to batch
@@ -359,9 +344,7 @@ public class Indexer
                     {
                         WriteModel<Document> op = bulkOperations.poll();
                         if (op != null)
-                        {
                             batch.add(op);
-                        }
                     }
 
                     // Process batch if not empty
@@ -406,9 +389,7 @@ public class Indexer
                 {
                     WriteModel<Document> op = bulkOperations.poll();
                     if (op != null)
-                    {
                         finalBatch.add(op);
-                    }
                 }
                 try
                 {
@@ -457,8 +438,8 @@ public class Indexer
                 }
             });
         }
-
         executor.shutdown();
+
         try
         {
             // Wait for all tasks to complete or timeout after 1 hour
@@ -484,88 +465,158 @@ public class Indexer
             System.err.println("Bulk writer thread interrupted: " + e.getMessage());
             Thread.currentThread().interrupt();
         }
-
         System.out.println("IDF values calculated and stored for all indexed words.");
     }
 
-    // Update to support incremental mode
-    public List<CrawledDoc> fetchCrawledDocumentsBatch(int skip, int limit, boolean incrementalOnly)
+    // Fetch crawled documents in batches
+    public List<CrawledDoc> fetchCrawledDocumentsBatch(int skip, int limit)
     {
-        MongoCollection<Document> pagesCollection =
-                DatabaseConnection.getDatabase().getCollection("clean_pages");
-
+        System.out.println(
+                "Starting fetchCrawledDocumentsBatch with skip=" + skip + ", limit=" + limit);
         List<CrawledDoc> documents = Collections.synchronizedList(new ArrayList<>());
         List<String> docIdsToClean = Collections.synchronizedList(new ArrayList<>());
         AtomicInteger errorCount = new AtomicInteger(0);
+        Document query = new Document("$or",
+                Arrays.asList(new Document("indexed", false), new Document("indexed", null),
+                        new Document("indexed", new Document("$exists", false))));
 
-        // Create query based on incremental mode
-        Document query = incrementalOnly ? new Document("indexed", false) : new Document();
+        // Log query and count matching documents
+        long matchingDocs = pagesCollection.countDocuments(query);
+        System.out.println("Query: " + query.toJson());
+        System.out.println("Found " + matchingDocs + " documents matching query");
 
         int processorCount = Runtime.getRuntime().availableProcessors();
+        System.out.println("Using " + processorCount + " threads for processing");
         ExecutorService executor = Executors.newWorkStealingPool(processorCount);
 
-        // Find documents with pagination
+        // Log documents retrieved by the query
+        int docCount = 0;
         for (Document doc : pagesCollection.find(query).skip(skip).limit(limit))
         {
+            docCount++;
+            System.out
+                    .println("Processing document " + docCount + ": _id=" + doc.getObjectId("_id"));
+            System.out.println("Document fields: url=" + doc.getString("url") + ", title="
+                    + doc.getString("title") + ", content="
+                    + (doc.getString("content") != null ? "[present]" : "null") + ", Popularity="
+                    + doc.get("Popularity") + ", indexed=" + doc.get("indexed"));
+
             executor.submit(() -> {
                 try
                 {
-                    String url = doc.getString("url");
-                    String content = doc.getString("content");
-                    String title = doc.getString("title");
-
-                    if (content == null || content.isEmpty())
+                    // Validate required fields
+                    if (!doc.containsKey("url") || doc.getString("url") == null)
                     {
+                        System.err.println("Document missing or null 'url' field: _id="
+                                + doc.getObjectId("_id"));
+                        errorCount.incrementAndGet();
+                        return;
+                    }
+                    if (!doc.containsKey("content") || doc.getString("content") == null)
+                    {
+                        System.err.println("Document missing or null 'content' field: _id="
+                                + doc.getObjectId("_id"));
+                        errorCount.incrementAndGet();
+                        return;
+                    }
+                    if (!doc.containsKey("title") || doc.getString("title") == null)
+                    {
+                        System.err.println("Document missing or null 'title' field: _id="
+                                + doc.getObjectId("_id"));
+                        errorCount.incrementAndGet();
+                        return;
+                    }
+                    if (!doc.containsKey("Popularity"))
+                    {
+                        System.err.println("Document missing 'Popularity' field: _id="
+                                + doc.getObjectId("_id"));
                         errorCount.incrementAndGet();
                         return;
                     }
 
-                    CrawledDoc crawledDoc = new CrawledDoc(url, title, content);
+                    String url = doc.getString("url");
+                    String content = doc.getString("content");
+                    String title = doc.getString("title");
+                    double popularity = doc.getDouble("Popularity");
 
-                    // Store MongoDB ID for marking as indexed later
+                    // Create CrawledDoc
+                    System.out.println("Creating CrawledDoc for URL: " + url);
+                    CrawledDoc crawledDoc = new CrawledDoc(url, title, popularity, content);
                     crawledDoc.setMongoId(doc.getObjectId("_id").toString());
+                    System.out
+                            .println("CrawledDoc created with MongoId: " + doc.getObjectId("_id"));
 
-                    // If document already has a doc_id, it was previously indexed and needs cleanup
+                    // Check for existing doc_id
                     if (doc.containsKey("doc_id"))
                     {
                         String existingDocId = doc.getString("doc_id");
-                        crawledDoc.setDocId(existingDocId);
-                        docIdsToClean.add(existingDocId);
+                        System.out.println("Found existing doc_id: " + existingDocId);
+                        Document forwardIndexEntry = forwardIndexCollection
+                                .find(Filters.eq("doc_id", existingDocId)).first();
+                        if (forwardIndexEntry != null)
+                        {
+                            System.out.println(
+                                    "Forward index entry found for doc_id: " + existingDocId);
+                            crawledDoc.setDocId(existingDocId);
+                            docIdsToClean.add(existingDocId);
+                        }
+                        else
+                            System.out
+                                    .println("No forward index entry for doc_id: " + existingDocId);
+
                     }
+                    else
+                        System.out.println(
+                                "No doc_id field in document: _id=" + doc.getObjectId("_id"));
+
 
                     documents.add(crawledDoc);
+                    System.out.println("Added CrawledDoc to documents list for URL: " + url);
                 }
                 catch (Exception e)
                 {
                     errorCount.incrementAndGet();
+                    System.err.println("Error processing document _id=" + doc.getObjectId("_id")
+                            + ": " + e.getClass().getName() + ": " + e.getMessage());
+                    e.printStackTrace();
                 }
             });
         }
+        System.out.println("Retrieved " + docCount + " documents from query");
 
+        // Shutdown executor and wait for completion
         executor.shutdown();
         try
         {
-            executor.awaitTermination(5, TimeUnit.MINUTES);
+            System.out.println("Waiting for executor tasks to complete...");
+            boolean terminated = executor.awaitTermination(5, TimeUnit.MINUTES);
+            if (!terminated)
+                System.err.println("Executor did not terminate within 5 minutes");
+            else
+                System.out.println("Executor terminated successfully");
+
         }
         catch (InterruptedException e)
         {
+            System.err.println("Executor interrupted: " + e.getMessage());
             Thread.currentThread().interrupt();
         }
 
-        // Clean existing index entries efficiently
-        if (incrementalOnly && !docIdsToClean.isEmpty())
+        // Log results
+        System.out.println("Batch processing complete: " + documents.size()
+                + " documents retrieved, " + errorCount.get() + " errors encountered");
+        if (!docIdsToClean.isEmpty())
         {
+            System.out.println("Documents to clean: " + docIdsToClean.size() + " doc_ids");
             cleanIndexEntriesForDocuments(docIdsToClean);
         }
+        else
+            System.out.println("No documents to clean");
 
         return documents;
     }
 
-    /**
-     * Efficiently clean index entries using forward index
-     * 
-     * @param docIds List of document IDs to clean from the index
-     */
+    // Clean index entries for documents that are being re-indexed
     private void cleanIndexEntriesForDocuments(List<String> docIds)
     {
         if (docIds.isEmpty())
@@ -653,51 +704,52 @@ public class Indexer
         }
     }
 
+    // Extract clean text from document
+    private String extractCleanText(org.jsoup.nodes.Document doc)
+    {
+        // Extract visible text from body
+        String bodyText = doc.body().text();
+
+        // Limit length to avoid excessive storage
+        int maxChars = 15000; // ~15KB of text is usually enough for snippets
+        if (bodyText.length() > maxChars)
+        {
+            bodyText = bodyText.substring(0, maxChars) + "...";
+        }
+
+        return bodyText;
+    }
+
+    // main method to start the indexing process
     public static void main(String[] args)
     {
         long startTime = System.currentTimeMillis();
         Indexer indexer = new Indexer();
 
-        // Check for incremental flag
-        boolean incrementalMode = Arrays.asList(args).contains("--incremental");
-
         try
         {
             // Process documents in batches to avoid memory issues
             MongoCollection<Document> pagesCollection =
-                    DatabaseConnection.getDatabase().getCollection("clean_pages");
-
-            // Get count based on mode
-            long totalDocs =
-                    incrementalMode ? pagesCollection.countDocuments(Filters.eq("indexed", false))
-                            : pagesCollection.countDocuments();
-
-            System.out.println((incrementalMode ? "Incremental indexing: " : "Full indexing: ")
-                    + totalDocs + " documents to process");
-
-            int batchSize = 500; // Smaller batches to control memory usage
+                    DatabaseConnection.getDatabase().getCollection("pages");
+            // Get count
+            long totalDocs = pagesCollection.countDocuments();
+            int batchSize = 500;
 
             for (int skip = 0; skip < totalDocs; skip += batchSize)
             {
-                System.out.println("Processing batch: " + (skip / batchSize + 1) + " of "
-                        + (int) Math.ceil((double) totalDocs / batchSize));
-
                 // Pass incremental mode flag
-                List<CrawledDoc> batch =
-                        indexer.fetchCrawledDocumentsBatch(skip, batchSize, incrementalMode);
+                List<CrawledDoc> batch = indexer.fetchCrawledDocumentsBatch(skip, batchSize);
                 System.out.println("Retrieved " + batch.size() + " documents to index");
 
                 if (!batch.isEmpty())
-                {
                     indexer.indexDocuments(batch);
-                }
 
-                // Suggest garbage collection between batches
                 batch.clear();
                 System.gc();
             }
 
             // Ensure IDF calculations complete before closing connection
+            totalDocs = pagesCollection.countDocuments();
             indexer.computeAndStoreIdfValues();
         }
         catch (Exception e)

@@ -1,6 +1,6 @@
 package com.example.Indexer;
 
-import org.apache.lucene.analysis.en.EnglishMinimalStemmer;
+import org.tartarus.snowball.ext.PorterStemmer;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -8,13 +8,13 @@ import org.springframework.stereotype.Component;
 @Component
 public class Stemmer
 {
-    private final EnglishMinimalStemmer stemmer;
+    private final PorterStemmer stemmer;
     private final Map<String, String> stemCache;
     private static final int MAX_CACHE_SIZE = 50000;
 
     public Stemmer()
     {
-        this.stemmer = new EnglishMinimalStemmer();
+        this.stemmer = new PorterStemmer();
         // Use LinkedHashMap with access-order to implement LRU cache
         this.stemCache =
                 Collections.synchronizedMap(new LinkedHashMap<String, String>(16, 0.75f, true)
@@ -29,8 +29,13 @@ public class Stemmer
 
     public String stem(String word)
     {
-        if (word == null || word.isEmpty() || word.length() <= 2)
-            return word != null ? word.toLowerCase() : "";
+        // Return null for single characters, empty strings, or pure numbers
+        if (word == null || word.isEmpty() || word.length() <= 1 || isNumeric(word))
+            return null;
+
+        // Don't stem but keep short words (2-3 chars)
+        if (word.length() <= 3)
+            return word.toLowerCase();
 
         String lowercaseWord = word.toLowerCase();
 
@@ -38,11 +43,13 @@ public class Stemmer
         String cachedStem = stemCache.get(lowercaseWord);
         if (cachedStem != null)
             return cachedStem;
+
         try
         {
-            char[] chars = lowercaseWord.toCharArray();
-            int newLength = stemmer.stem(chars, chars.length);
-            String result = new String(chars, 0, newLength);
+            // Use Snowball PorterStemmer
+            stemmer.setCurrent(lowercaseWord);
+            stemmer.stem();
+            String result = stemmer.getCurrent();
 
             // Cache the result
             stemCache.put(lowercaseWord, result);
@@ -50,8 +57,23 @@ public class Stemmer
         }
         catch (Exception e)
         {
-            System.err.println("Stemming error for word '" + word + "': " + e.getMessage());
             return lowercaseWord;
         }
+    }
+
+    // Helper method to check if a string is numeric
+    private boolean isNumeric(String str)
+    {
+        if (str == null || str.isEmpty())
+            return false;
+
+        // Check if the string contains only digits
+        for (char c : str.toCharArray())
+        {
+            if (!Character.isDigit(c))
+                return false;
+        }
+
+        return true;
     }
 }

@@ -7,6 +7,9 @@ public class Metadata
     @JsonProperty("popularity")
     private double popularity;
 
+    @JsonProperty("title")
+    private String title;
+
     @JsonProperty("length")
     private int length;
 
@@ -15,6 +18,9 @@ public class Metadata
 
     @JsonProperty("URL")
     private String url;
+
+    @JsonProperty("snippet")
+    private String snippet;
 
     public double getPopularity()
     {
@@ -54,5 +60,25 @@ public class Metadata
     public void setUrl(String url)
     {
         this.url = url;
+    }
+
+    public String getTitle()
+    {
+        return title;
+    }
+
+    public void setTitle(String title)
+    {
+        this.title = title;
+    }
+
+    public String getSnippet()
+    {
+        return snippet;
+    }
+
+    public void setSnippet(String snippet)
+    {
+        this.snippet = snippet;
     }
 }
