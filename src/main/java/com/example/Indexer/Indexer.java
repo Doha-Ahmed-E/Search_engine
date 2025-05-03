@@ -83,7 +83,6 @@ public class Indexer
     {
         int processorCount = Runtime.getRuntime().availableProcessors();
         ExecutorService executor = Executors.newWorkStealingPool(processorCount);
-        totalDocs = crawledDocs.size();
 
         System.out.println("Starting indexing with " + processorCount + " threads...");
 
@@ -325,11 +324,16 @@ public class Indexer
 
     private double computeIdf(int docsWithTerm)
     {
-        return Math.log((double) totalDocs / (1 + docsWithTerm));
+        double idf = Math.log((double) totalDocs / (1 + docsWithTerm));
+        return idf;
     }
 
     private void computeAndStoreIdfValues()
     {
+        // Get the actual total document count from the database
+        totalDocs = documentsCollection.countDocuments();
+        System.out.println("Computing IDF values based on " + totalDocs + " total documents");
+
         AtomicBoolean connectionActive = new AtomicBoolean(true);
         int processorCount = Runtime.getRuntime().availableProcessors();
         ExecutorService executor = Executors.newFixedThreadPool(processorCount);
@@ -489,7 +493,7 @@ public class Indexer
     }
 
     // Update to support incremental mode
-    public List<CrawledDoc> fetchCrawledDocumentsBatch(int skip, int limit, boolean incrementalOnly)
+    public List<CrawledDoc> fetchCrawledDocumentsBatch(int skip, int limit)
     {
         MongoCollection<Document> pagesCollection =
                 DatabaseConnection.getDatabase().getCollection("clean_pages");
@@ -499,7 +503,7 @@ public class Indexer
         AtomicInteger errorCount = new AtomicInteger(0);
 
         // Create query based on incremental mode
-        Document query = incrementalOnly ? new Document("indexed", false) : new Document();
+        Document query = new Document("indexed", false);
 
         int processorCount = Runtime.getRuntime().availableProcessors();
         ExecutorService executor = Executors.newWorkStealingPool(processorCount);
@@ -525,12 +529,20 @@ public class Indexer
                     // Store MongoDB ID for marking as indexed later
                     crawledDoc.setMongoId(doc.getObjectId("_id").toString());
 
-                    // If document already has a doc_id, it was previously indexed and needs cleanup
+                    // Check if this document ID exists in the forward index
                     if (doc.containsKey("doc_id"))
                     {
                         String existingDocId = doc.getString("doc_id");
-                        crawledDoc.setDocId(existingDocId);
-                        docIdsToClean.add(existingDocId);
+
+                        // If it exists in forward index, it was actually indexed before
+                        Document forwardIndexEntry = forwardIndexCollection
+                                .find(Filters.eq("doc_id", existingDocId)).first();
+
+                        if (forwardIndexEntry != null)
+                        {
+                            crawledDoc.setDocId(existingDocId);
+                            docIdsToClean.add(existingDocId);
+                        }
                     }
 
                     documents.add(crawledDoc);
@@ -553,7 +565,7 @@ public class Indexer
         }
 
         // Clean existing index entries efficiently
-        if (incrementalOnly && !docIdsToClean.isEmpty())
+        if (!docIdsToClean.isEmpty())
         {
             cleanIndexEntriesForDocuments(docIdsToClean);
         }
@@ -658,9 +670,6 @@ public class Indexer
         long startTime = System.currentTimeMillis();
         Indexer indexer = new Indexer();
 
-        // Check for incremental flag
-        boolean incrementalMode = Arrays.asList(args).contains("--incremental");
-
         try
         {
             // Process documents in batches to avoid memory issues
@@ -668,13 +677,7 @@ public class Indexer
                     DatabaseConnection.getDatabase().getCollection("clean_pages");
 
             // Get count based on mode
-            long totalDocs =
-                    incrementalMode ? pagesCollection.countDocuments(Filters.eq("indexed", false))
-                            : pagesCollection.countDocuments();
-
-            System.out.println((incrementalMode ? "Incremental indexing: " : "Full indexing: ")
-                    + totalDocs + " documents to process");
-
+            long totalDocs = pagesCollection.countDocuments();
             int batchSize = 500; // Smaller batches to control memory usage
 
             for (int skip = 0; skip < totalDocs; skip += batchSize)
@@ -683,8 +686,7 @@ public class Indexer
                         + (int) Math.ceil((double) totalDocs / batchSize));
 
                 // Pass incremental mode flag
-                List<CrawledDoc> batch =
-                        indexer.fetchCrawledDocumentsBatch(skip, batchSize, incrementalMode);
+                List<CrawledDoc> batch = indexer.fetchCrawledDocumentsBatch(skip, batchSize);
                 System.out.println("Retrieved " + batch.size() + " documents to index");
 
                 if (!batch.isEmpty())
@@ -698,6 +700,7 @@ public class Indexer
             }
 
             // Ensure IDF calculations complete before closing connection
+            totalDocs = pagesCollection.countDocuments();
             indexer.computeAndStoreIdfValues();
         }
         catch (Exception e)
