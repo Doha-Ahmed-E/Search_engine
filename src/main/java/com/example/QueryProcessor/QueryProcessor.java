@@ -562,26 +562,16 @@ public class QueryProcessor
     {
         if (posting == null)
             return;
-        String docId = posting.getString("doc_id");
-        Document fullDoc = documentsCollection.find(Filters.eq("doc_id", docId)).first();
-        double popularity = 0.0;
-        String title = "";
+
         String snippet = "";
-        if (fullDoc != null)
-        {
-            popularity = fullDoc.getDouble("popularity");
-            title = fullDoc.getString("title");
-            List<String> termsInDoc = new ArrayList<>(qDoc.getTermStats().keySet());
-            snippet = generateSnippet(termsInDoc, fullDoc);
-        }
 
         Metadata metadata = new Metadata();
         metadata.setUrl(posting.getString("url"));
-        metadata.setPopularity(popularity);
-        metadata.setTitle(title);
-        metadata.setSnippet(snippet);
+        metadata.setPopularity(
+                posting.containsKey("popularity") ? posting.getDouble("popularity") : 0.0);
+        metadata.setTitle(posting.getString("title"));
+        // metadata.setSnippet(posting.getString("content"));
         metadata.setLength(posting.getInteger("length", 0));
-        Long timestamp = posting.getLong("timestamp");
 
         qDoc.setMetadata(metadata);
     }

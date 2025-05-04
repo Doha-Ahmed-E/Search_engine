@@ -177,15 +177,15 @@ public class Indexer
 
             // Save document metadata
             Document docEntry = new Document().append("doc_id", docId)
-                    .append("content_hash", contentHash).append("url", url).append("title", title)
-                    .append("processed_text", extractCleanText(doc))
-                    .append("popularity", popularity).append("indexed_at", new Date());
+                    .append("content_hash", contentHash).append("url", url);
 
             documentsCollection.insertOne(docEntry);
 
             // Update word index with TF
+            String content = extractCleanText(doc);
             long timestamp = System.currentTimeMillis();
-            updateWordIndex(docId, url, title, wordStats, totalWords, timestamp);
+            updateWordIndex(docId, url, title, wordStats, totalWords, timestamp, popularity,
+                    content);
             System.out.println("Indexed document: " + url + " (ID: " + docId + ")");
 
             // Update forward index and mark page as indexed
@@ -249,7 +249,8 @@ public class Indexer
 
     // Update the inverted index with word statistics
     private void updateWordIndex(String docId, String url, String title,
-            Map<String, WordStats> wordStats, int totalWords, long timestamp)
+            Map<String, WordStats> wordStats, int totalWords, long timestamp, double popularity,
+            String content)
     {
 
         // Process title the same way as content to get stemmed words
@@ -281,7 +282,8 @@ public class Indexer
                     .append("in_title", inTitle).append("frequency", stats.getFrequency())
                     .append("tf", tf).append("importance_score", stats.getImportanceScore())
                     .append("length", totalWords).append("timestamp", timestamp)
-                    .append("positions", stats.getPositions());
+                    .append("positions", stats.getPositions()).append("popularity", popularity)
+                    .append("content", content).append("title", title);
 
             // for new words, create a new entry in the inverted index
             // for existing words, update the postings array
@@ -494,12 +496,6 @@ public class Indexer
         for (Document doc : pagesCollection.find(query).skip(skip).limit(limit))
         {
             docCount++;
-            System.out
-                    .println("Processing document " + docCount + ": _id=" + doc.getObjectId("_id"));
-            System.out.println("Document fields: url=" + doc.getString("url") + ", title="
-                    + doc.getString("title") + ", content="
-                    + (doc.getString("content") != null ? "[present]" : "null") + ", Popularity="
-                    + doc.get("Popularity") + ", indexed=" + doc.get("indexed"));
 
             executor.submit(() -> {
                 try
@@ -526,9 +522,9 @@ public class Indexer
                         errorCount.incrementAndGet();
                         return;
                     }
-                    if (!doc.containsKey("Popularity"))
+                    if (!doc.containsKey("popularity"))
                     {
-                        System.err.println("Document missing 'Popularity' field: _id="
+                        System.err.println("Document missing 'popularity' field: _id="
                                 + doc.getObjectId("_id"));
                         errorCount.incrementAndGet();
                         return;
@@ -537,7 +533,7 @@ public class Indexer
                     String url = doc.getString("url");
                     String content = doc.getString("content");
                     String title = doc.getString("title");
-                    double popularity = doc.getDouble("Popularity");
+                    double popularity = doc.getDouble("popularity");
 
                     // Create CrawledDoc
                     System.out.println("Creating CrawledDoc for URL: " + url);
