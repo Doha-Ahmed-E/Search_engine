@@ -2,6 +2,9 @@ package com.example.QueryProcessor;
 
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.Filters;
+
+import ch.qos.logback.core.boolex.Matcher;
+
 import com.example.DatabaseConnection;
 import com.example.Indexer.Stemmer;
 import com.example.Indexer.StopWords;
@@ -16,6 +19,7 @@ import org.springframework.stereotype.Component;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
@@ -23,16 +27,18 @@ public class QueryProcessor
 {
     private final MongoCollection<Document> wordIndexCollection;
     private final MongoCollection<Document> documentsCollection;
+    private final MongoCollection<Document> pagesCollection;
     private final Tokenizer tokenizer;
     private final StopWords stopWords;
     private final Stemmer stemmer;
     private final ExecutorService executorService;
     private final Map<String, Map<String, List<Integer>>> positionCache;
-
+    List<String> nonStemmedQueryTerms = null;
     public QueryProcessor()
     {
         this.wordIndexCollection = DatabaseConnection.getDatabase().getCollection("inverted_index");
         this.documentsCollection = DatabaseConnection.getDatabase().getCollection("documents");
+        this.pagesCollection = DatabaseConnection.getDatabase().getCollection("pages");
         this.tokenizer = new Tokenizer();
         this.stopWords = new StopWords();
         this.stemmer = new Stemmer();
@@ -171,8 +177,7 @@ public class QueryProcessor
         return commonDocIds != null ? commonDocIds : Collections.emptySet();
     }
 
-    private Map<String, Map<String, List<Integer>>> fetchTermPositions(List<String> terms,
-            Set<String> docIds)
+    private Map<String, Map<String, List<Integer>>> fetchTermPositions(List<String> terms, Set<String> docIds)
     {
         Map<String, Map<String, List<Integer>>> termPositionsMap = new HashMap<>();
         List<Future<?>> futures = new ArrayList<>();
@@ -230,7 +235,7 @@ public class QueryProcessor
                 int phraseCount = countExactPhraseOccurrences(phraseTerms, termPositionsMap, docId);
                 if (phraseCount > 0)
                 {
-                    QDocument qDoc = createPhraseDocument(docId, phraseTerms, phraseCount);
+                    QDocument qDoc = createPhraseDocument(docId, phraseTerms, phraseCount,termPositionsMap);
                     phraseDocs.put(docId, qDoc);
                 }
             }, executorService));
@@ -267,45 +272,51 @@ public class QueryProcessor
         return count;
     }
 
-    private QDocument createPhraseDocument(String docId, List<String> phraseTerms, int phraseCount)
-    {
-        QDocument qDoc = new QDocument();
-        String stemmedPhrase = String.join(" ", phraseTerms);
+    private QDocument createPhraseDocument(String docId, List<String> phraseTerms, int phraseCount, 
+                                      Map<String, Map<String, List<Integer>>> termPositionsMap) {
+    QDocument qDoc = new QDocument();
+    String stemmedPhrase = String.join(" ", phraseTerms);
 
-        Document doc =
-                documentsCollection
-                        .find(Filters.eq("doc_id", docId)).projection(new Document("url", 1)
-                                .append("length", 1).append("timestamp", 1).append("title", 1))
-                        .first();
+    Document doc = pagesCollection
+            .find(Filters.eq("doc_id", docId))
+            .projection(new Document("url", 1)
+                .append("timestamp", 1)
+                .append("title", 1)
+                .append("popularity", 1))
+            .first();
+    
+    if (doc != null) {
+        Metadata metadata = new Metadata();
+        metadata.setUrl(doc.getString("url"));
+        metadata.setPopularity(doc.getDouble("popularity"));
+        Long timestamp = doc.getLong("timestamp");
+        metadata.setPublishDate(timestamp != null
+            ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(timestamp))
+            : "");
+        qDoc.setMetadata(metadata);
+        
+        String title = doc.getString("title");
+        metadata.setTitle(title);
+        
+        boolean inTitle = title != null
+                && title.toLowerCase().contains(String.join(" ", phraseTerms).toLowerCase());
 
-        if (doc != null)
-        {
-            Metadata metadata = new Metadata();
-            metadata.setUrl(doc.getString("url"));
-            metadata.setPopularity(0.5);
-            metadata.setLength(doc.getInteger("length", 0));
-            Long timestamp = doc.getLong("timestamp");
-            metadata.setPublishDate(timestamp != null
-                    ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(timestamp))
-                    : "");
-            qDoc.setMetadata(metadata);
+        double phraseTf = calculateTf(phraseCount, metadata.getLength());
+        TermStats phraseStats = new TermStats(inTitle);
+        phraseStats.setTf(phraseTf);
+        phraseStats.setImportanceScore(calculatePhraseImportance(phraseCount));
 
-            String title = doc.getString("title");
-            boolean inTitle = title != null
-                    && title.toLowerCase().contains(String.join(" ", phraseTerms).toLowerCase());
-
-            double phraseTf = calculateTf(phraseCount, metadata.getLength());
-            TermStats phraseStats = new TermStats(inTitle);
-            phraseStats.setTf(phraseTf);
-            phraseStats.setImportanceScore(calculatePhraseImportance(phraseCount));
-
-            Map<String, TermStats> termStats = new HashMap<>();
-            termStats.put(stemmedPhrase, phraseStats);
-            qDoc.setTermStats(termStats);
-        }
-
-        return qDoc;
+        Map<String, TermStats> termStats = new HashMap<>();
+        termStats.put(stemmedPhrase, phraseStats);
+        qDoc.setTermStats(termStats);
+        
+        // Generate and set snippet for phrase
+        String snippet = generatePhraseSnippet(docId, phraseTerms);
+        metadata.setSnippet(snippet);
     }
+
+    return qDoc;
+}
 
     private QueryInput buildQueryInput(List<String> phraseTerms, Map<String, QDocument> phraseDocs)
     {
@@ -457,7 +468,7 @@ public class QueryProcessor
 
     private double calculatePhraseIDF(int docsWithPhrase, int totalDocs)
     {
-        return docsWithPhrase == 0 ? 0 : Math.log((double) totalDocs / (1 + docsWithPhrase));
+        return Math.log((double) totalDocs / (1 + docsWithPhrase));
     }
 
     private QDocument mergeDocuments(QDocument doc1, QDocument doc2)
@@ -497,6 +508,7 @@ public class QueryProcessor
     {
         List<String> tokens = tokenizer.tokenize(queryString);
         tokens = stopWords.removeStopWords(tokens);
+        nonStemmedQueryTerms = new ArrayList<>(tokens);
         List<String> stemmedTokens = new ArrayList<>();
         for (String token : tokens)
         {
@@ -581,109 +593,272 @@ public class QueryProcessor
         qDoc.setMetadata(metadata);
     }
 
-    private String selectBestSnippetForTerms(List<String> queryTerms, List<String> snippets)
-    {
-        if (snippets == null || snippets.isEmpty())
+    private String selectBestSnippetForTerms(List<String> queryTerms, List<String> snippets) {
+        if (snippets == null || snippets.isEmpty()) {
             return "No preview available";
-
-        // If only one snippet, return it
-        if (snippets.size() == 1)
-            return snippets.get(0);
-
-        // If we have very few terms and snippets, consider joining them
-        if (queryTerms.size() > 1 && snippets.size() <= 5)
-        {
+        }
+    
+        if (snippets.size() == 1) {
+            return highlightAllTerms(snippets.get(0));
+        }
+    
+        if (queryTerms.size() > 1 && snippets.size() <= 5) {
             return joinSnippetsForDifferentTerms(queryTerms, snippets);
         }
-
-        // Otherwise use existing scoring logic for single best snippet
+    
+        // Original scoring logic
         Map<String, Integer> snippetScores = new HashMap<>();
-        for (String snippet : snippets)
-        {
+        for (String snippet : snippets) {
             int score = 0;
             String lowerSnippet = snippet.toLowerCase();
-
-            for (String term : queryTerms)
-            {
-                if (lowerSnippet.contains(term.toLowerCase()))
-                {
+            for (String term : queryTerms) {
+                if (lowerSnippet.contains(term.toLowerCase())) {
                     score++;
-                    // Bonus points if the term is highlighted
-                    String highlightPattern = "<strong>" + term + "</strong>";
-                    if (lowerSnippet.contains(highlightPattern.toLowerCase()))
+                    if (lowerSnippet.contains("<strong>" + term + "</strong>")) {
                         score += 2;
+                    }
                 }
             }
             snippetScores.put(snippet, score);
         }
-        // Return the snippet with the highest score
-        return snippets.stream().max(Comparator.comparingInt(snippetScores::get))
-                .orElse(snippets.get(0)); // Fallback to first snippet if scoring fails
+        
+        String bestSnippet = snippets.stream()
+            .max(Comparator.comparingInt(snippetScores::get))
+            .orElse(snippets.get(0));
+        
+        return highlightAllTerms(bestSnippet);
     }
 
-    private String joinSnippetsForDifferentTerms(List<String> queryTerms, List<String> snippets)
-    {
-        // Track best snippet for each query term
+    private String joinSnippetsForDifferentTerms(List<String> queryTerms, List<String> snippets) {
         Map<String, String> bestSnippetPerTerm = new HashMap<>();
-
-        // Find best snippet for each term
-        for (String term : queryTerms)
-        {
+    
+        for (String term : queryTerms) {
             String bestForTerm = null;
             int bestScore = -1;
-
-            for (String snippet : snippets)
-            {
-                String lowerSnippet = snippet.toLowerCase();
-                String lowerTerm = term.toLowerCase();
-
-                if (lowerSnippet.contains(lowerTerm))
-                {
-                    int score = 0;
-
-                    // Score based on how central the term is in the snippet
-                    int termPos = lowerSnippet.indexOf(lowerTerm);
-                    int snippetCenter = lowerSnippet.length() / 2;
-                    int distanceFromCenter = Math.abs(termPos - snippetCenter);
-                    score += 100 - Math.min(100, distanceFromCenter);
-
-                    // Bonus if term is highlighted
-                    String highlightPattern = "<strong>" + term + "</strong>";
-                    if (lowerSnippet.contains(highlightPattern.toLowerCase()))
-                        score += 50;
-
-                    // Update best snippet for this term if needed
-                    if (score > bestScore)
-                    {
-                        bestScore = score;
-                        bestForTerm = snippet;
-                    }
+    
+            for (String snippet : snippets) {
+                int score = calculateSnippetScore(snippet, term);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestForTerm = snippet;
                 }
             }
-
-            // Store best snippet for this term
-            if (bestForTerm != null)
-                bestSnippetPerTerm.put(term, bestForTerm);
+    
+            if (bestForTerm != null) {
+                bestSnippetPerTerm.put(term, highlightAllTerms(bestForTerm));
+            }
         }
-
-        // If we couldn't find specific snippets for terms, fall back to default method
-        if (bestSnippetPerTerm.isEmpty())
-            return snippets.get(0);
-
-
-        // Join distinct snippets with a separator
-        List<String> distinctSnippets =
-                new ArrayList<>(new LinkedHashSet<>(bestSnippetPerTerm.values()));
-
-        // Limit to at most 3 snippets to avoid too long results
-        if (distinctSnippets.size() > 3)
+    
+        if (bestSnippetPerTerm.isEmpty()) {
+            return highlightAllTerms(snippets.get(0));
+        }
+    
+        List<String> distinctSnippets = new ArrayList<>(
+            new LinkedHashSet<>(bestSnippetPerTerm.values())
+        );
+    
+        if (distinctSnippets.size() > 3) {
             distinctSnippets = distinctSnippets.subList(0, 3);
-
-        // Join with separator
+        }
+    
         return String.join(" ... | ... ", distinctSnippets);
     }
 
+    private String highlightAllTerms(String snippet) {
+        if (nonStemmedQueryTerms == null || nonStemmedQueryTerms.isEmpty()) {
+            return snippet;
+        }
     
+        // Create pattern that matches any original term (case insensitive)
+        String patternString = nonStemmedQueryTerms.stream()
+            .map(Pattern::quote)
+            .collect(Collectors.joining("|"));
+        
+        Pattern pattern = Pattern.compile("(?i)\\b(" + patternString + ")\\b");
+        java.util.regex.Matcher matcher = pattern.matcher(snippet);
+        
+        StringBuffer sb = new StringBuffer();
+        while (matcher.find()) {
+            // Preserve original case from the document
+            String matchedTerm = matcher.group(1);
+            matcher.appendReplacement(sb, "<strong>" + matchedTerm + "</strong>");
+        }
+        matcher.appendTail(sb);
+        
+        return sb.toString();
+    }
+    private int calculateSnippetScore(String snippet, String term) {
+        int score = 0;
+        String lowerSnippet = snippet.toLowerCase();
+        String lowerTerm = term.toLowerCase();
+    
+        if (lowerSnippet.contains(lowerTerm)) {
+            // Score based on term position centrality
+            int termPos = lowerSnippet.indexOf(lowerTerm);
+            int snippetCenter = lowerSnippet.length() / 2;
+            score += 100 - Math.min(100, Math.abs(termPos - snippetCenter));
+    
+            // Bonus if term is highlighted
+            if (lowerSnippet.contains("<strong>" + term + "</strong>")) {
+                score += 50;
+            }
+        }
+        return score;
+    }
+    private String generatePhraseSnippet(String docId, List<String> phraseTerms) {
+        try {
+            // Get all snippets for each term in the phrase from their postings
+            List<List<String>> allTermSnippets = new ArrayList<>();
+            
+            for (String term : phraseTerms) {
+                Document wordDoc = wordIndexCollection.find(Filters.eq("word", term))
+                    .projection(new Document("postings", 1))
+                    .first();
+                
+                if (wordDoc != null) {
+                    List<Document> postings = wordDoc.getList("postings", Document.class);
+                    for (Document posting : postings) {
+                        if (docId.equals(posting.getString("doc_id"))) {
+                            List<String> snippets = TypeSafeUtil.safeStringList(posting.get("snippet"));
+                            if (snippets != null && !snippets.isEmpty()) {
+                                allTermSnippets.add(snippets);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // If we didn't get snippets for all terms, return a default
+            if (allTermSnippets.size() != phraseTerms.size()) {
+                return "Relevant content not available";
+            }
+            
+            // Find snippets that contain all terms (or at least the first and last)
+            List<String> candidateSnippets = new ArrayList<>();
+            for (int i = 0; i < allTermSnippets.get(0).size(); i++) {
+                String firstTermSnippet = allTermSnippets.get(0).get(i);
+                
+                // Check if this snippet appears in other terms' snippet lists
+                boolean allContain = true;
+                for (int j = 1; j < allTermSnippets.size(); j++) {
+                    if (!allTermSnippets.get(j).contains(firstTermSnippet)) {
+                        allContain = false;
+                        break;
+                    }
+                }
+                
+                if (allContain) {
+                    candidateSnippets.add(firstTermSnippet);
+                }
+            }
+            
+            // If no exact matches, try to find snippets that contain at least first and last term
+            if (candidateSnippets.isEmpty()) {
+                for (String snippet : allTermSnippets.get(0)) {
+                    if (allTermSnippets.get(allTermSnippets.size() - 1).contains(snippet)) {
+                        candidateSnippets.add(snippet);
+                    }
+                }
+            }
+            
+            // If still no matches, just use the first term's first snippet
+            if (candidateSnippets.isEmpty()) {
+                candidateSnippets.add(allTermSnippets.get(0).get(0));
+            }
+            
+            // Select the best snippet from candidates
+            String bestSnippet = selectBestPhraseSnippet(candidateSnippets, phraseTerms);
+            
+            return highlightAllTerms(bestSnippet);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "Error generating snippet";
+        }
+    }
+    
+    private String selectBestPhraseSnippet(List<String> snippets, List<String> phraseTerms) {
+        if (snippets.size() == 1) {
+            return snippets.get(0);
+        }
+        
+        // Score snippets based on phrase term proximity and highlighting
+        Map<String, Integer> snippetScores = new HashMap<>();
+        String phrase = String.join(" ", phraseTerms);
+        
+        for (String snippet : snippets) {
+            int score = 0;
+            String lowerSnippet = snippet.toLowerCase();
+            
+            // Bonus if snippet contains the exact phrase
+            if (lowerSnippet.contains(phrase.toLowerCase())) {
+                score += 100;
+            }
+            
+            // Check for all terms in order
+            boolean allTermsInOrder = true;
+            int lastPos = -1;
+            for (String term : phraseTerms) {
+                int pos = lowerSnippet.indexOf(term.toLowerCase());
+                if (pos == -1) {
+                    allTermsInOrder = false;
+                    break;
+                }
+                if (pos < lastPos) {
+                    allTermsInOrder = false;
+                    break;
+                }
+                lastPos = pos;
+            }
+            
+            if (allTermsInOrder) {
+                score += 50;
+            }
+            
+            // Bonus for highlighted terms
+            for (String term : phraseTerms) {
+                if (lowerSnippet.contains("<strong>" + term.toLowerCase() + "</strong>")) {
+                    score += 20;
+                }
+            }
+            
+            snippetScores.put(snippet, score);
+        }
+        
+        // Return highest scoring snippet
+        return snippets.stream()
+            .max(Comparator.comparingInt(snippetScores::get))
+            .orElse(snippets.get(0));
+    }
+    
+    private int[] convertTokenPositionsToCharOffsets(String content, int startTokenPos, int endTokenPos) {
+        // Simple tokenization to match the indexer's token positions
+        String[] tokens = content.split("\\s+");
+        if (startTokenPos < 0 || endTokenPos >= tokens.length) {
+            return null;
+        }
+    
+        // Find the character offsets
+        int charCount = 0;
+        int startChar = -1;
+        int endChar = -1;
+        
+        for (int i = 0; i < tokens.length; i++) {
+            if (i == startTokenPos) {
+                startChar = charCount;
+            }
+            if (i == endTokenPos) {
+                endChar = charCount + tokens[i].length();
+                break;
+            }
+            charCount += tokens[i].length() + 1; // +1 for the space
+        }
+    
+        if (startChar == -1 || endChar == -1) {
+            return null;
+        }
+    
+        return new int[]{startChar, endChar};
+    }
 }
-
 

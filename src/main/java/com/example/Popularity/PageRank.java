@@ -21,8 +21,8 @@ public class PageRank
 
 
 
-    private static final String MONGO_URI = "mongodb+srv://APTteam:s0sapt_proj_s0s325@searchcluster.llposxz.mongodb.net/SearchDB?retryWrites=true&w=majority";
-    private static final String DB_NAME = "faragDB";
+    private static final String MONGO_URI = "mongodb://localhost:27017";
+    private static final String DB_NAME = "newDb";
     private static final String COLLECTION_NAME = "pages";
 
     public static Map<String, Double> computePageRank(Map<String, List<String>> graph)
