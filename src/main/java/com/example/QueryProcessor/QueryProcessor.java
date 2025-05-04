@@ -569,7 +569,7 @@ public class QueryProcessor
         String snippet = "";
         if (fullDoc != null)
         {
-            popularity = fullDoc.getDouble("popularity");
+            // popularity = fullDoc.getDouble("popularity");
             title = fullDoc.getString("title");
             List<String> termsInDoc = new ArrayList<>(qDoc.getTermStats().keySet());
             snippet = generateSnippet(termsInDoc, fullDoc);
