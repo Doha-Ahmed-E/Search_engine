@@ -8,6 +8,7 @@ import com.example.Indexer.StopWords;
 import com.example.Indexer.Tokenizer;
 import com.example.Ranker.QueryInput;
 import com.example.Ranker.RankedDocument;
+import com.example.util.TypeSafeUtil;
 import com.example.Ranker.ParallelRanker;
 import org.bson.Document;
 import org.springframework.stereotype.Component;
@@ -563,51 +564,277 @@ public class QueryProcessor
         if (posting == null)
             return;
 
-        String snippet = "";
+        // Get pre-computed snippets from the posting
+        List<String> snippets = TypeSafeUtil.safeStringList(posting.get("snippet"));
+        String bestSnippet =
+                selectBestSnippetForTerms(new ArrayList<>(qDoc.getTermStats().keySet()), snippets);
 
         Metadata metadata = new Metadata();
         metadata.setUrl(posting.getString("url"));
         metadata.setPopularity(
                 posting.containsKey("popularity") ? posting.getDouble("popularity") : 0.0);
         metadata.setTitle(posting.getString("title"));
-        // metadata.setSnippet(posting.getString("content"));
+        metadata.setSnippet(bestSnippet);
         metadata.setLength(posting.getInteger("length", 0));
 
         qDoc.setMetadata(metadata);
     }
 
-    private String generateSnippet(List<String> queryTerms, Document fullDoc)
+    private String selectBestSnippetForTerms(List<String> queryTerms, List<String> snippets)
     {
-        // Get content from documents collection
-        if (fullDoc != null && fullDoc.containsKey("processed_text"))
+        if (snippets == null || snippets.isEmpty())
+            return "No preview available";
+
+        // If only one snippet, return it
+        if (snippets.size() == 1)
+            return snippets.get(0);
+
+        // If we have very few terms and snippets, consider joining them
+        if (queryTerms.size() > 1 && snippets.size() <= 5)
         {
-            String processedText = fullDoc.getString("processed_text");
-            return findBestSnippet(processedText, queryTerms, 150);
+            return joinSnippetsForDifferentTerms(queryTerms, snippets);
         }
-        return "No preview available";
+
+        // Otherwise use existing scoring logic for single best snippet
+        Map<String, Integer> snippetScores = new HashMap<>();
+        for (String snippet : snippets)
+        {
+            int score = 0;
+            String lowerSnippet = snippet.toLowerCase();
+
+            for (String term : queryTerms)
+            {
+                if (lowerSnippet.contains(term.toLowerCase()))
+                {
+                    score++;
+                    // Bonus points if the term is highlighted
+                    String highlightPattern = "<strong>" + term + "</strong>";
+                    if (lowerSnippet.contains(highlightPattern.toLowerCase()))
+                        score += 2;
+                }
+            }
+            snippetScores.put(snippet, score);
+        }
+        // Return the snippet with the highest score
+        return snippets.stream().max(Comparator.comparingInt(snippetScores::get))
+                .orElse(snippets.get(0)); // Fallback to first snippet if scoring fails
     }
 
-    private String findBestSnippet(String text, List<String> queryTerms, int snippetLength)
+    private String joinSnippetsForDifferentTerms(List<String> queryTerms, List<String> snippets)
     {
-        String[] words = text.split("\\s+");
-        int bestStart = 0;
-        int bestMatchCount = 0;
+        // Track best snippet for each query term
+        Map<String, String> bestSnippetPerTerm = new HashMap<>();
 
-        for (int i = 0; i < words.length; i++)
+        // Find best snippet for each term
+        for (String term : queryTerms)
         {
-            int matchCount = 0;
-            for (int j = i; j < Math.min(i + snippetLength, words.length); j++)
-                if (queryTerms.contains(words[j].toLowerCase()))
-                    matchCount++;
+            String bestForTerm = null;
+            int bestScore = -1;
 
-            if (matchCount > bestMatchCount)
+            for (String snippet : snippets)
             {
-                bestMatchCount = matchCount;
-                bestStart = i;
+                String lowerSnippet = snippet.toLowerCase();
+                String lowerTerm = term.toLowerCase();
+
+                if (lowerSnippet.contains(lowerTerm))
+                {
+                    int score = 0;
+
+                    // Score based on how central the term is in the snippet
+                    int termPos = lowerSnippet.indexOf(lowerTerm);
+                    int snippetCenter = lowerSnippet.length() / 2;
+                    int distanceFromCenter = Math.abs(termPos - snippetCenter);
+                    score += 100 - Math.min(100, distanceFromCenter);
+
+                    // Bonus if term is highlighted
+                    String highlightPattern = "<strong>" + term + "</strong>";
+                    if (lowerSnippet.contains(highlightPattern.toLowerCase()))
+                        score += 50;
+
+                    // Update best snippet for this term if needed
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestForTerm = snippet;
+                    }
+                }
+            }
+
+            // Store best snippet for this term
+            if (bestForTerm != null)
+                bestSnippetPerTerm.put(term, bestForTerm);
+        }
+
+        // If we couldn't find specific snippets for terms, fall back to default method
+        if (bestSnippetPerTerm.isEmpty())
+            return snippets.get(0);
+
+
+        // Join distinct snippets with a separator
+        List<String> distinctSnippets =
+                new ArrayList<>(new LinkedHashSet<>(bestSnippetPerTerm.values()));
+
+        // Limit to at most 3 snippets to avoid too long results
+        if (distinctSnippets.size() > 3)
+            distinctSnippets = distinctSnippets.subList(0, 3);
+
+        // Join with separator
+        return String.join(" ... | ... ", distinctSnippets);
+    }
+
+    // Helper method to print results in a readable format
+    private static void printQueryResults(QueryInput result)
+    {
+        // Print query terms
+        System.out.println("Query terms: " + result.getQueryTerms());
+
+        // Print global stats
+        GlobalStats stats = result.getGlobalStats();
+        System.out.println("\nGlobal statistics:");
+        System.out.println("  Total documents: " + stats.getTotalDocs());
+        System.out.println("  Documents containing terms:");
+
+        Map<String, Integer> docsContainingTerm = stats.getDocsContainingTerm();
+        if (docsContainingTerm != null)
+        {
+            for (Map.Entry<String, Integer> entry : docsContainingTerm.entrySet())
+            {
+                System.out.println("    " + entry.getKey() + ": " + entry.getValue() + " docs");
             }
         }
-        int end = Math.min(bestStart + snippetLength, words.length);
-        return String.join(" ", Arrays.copyOfRange(words, bestStart, end));
+
+        // Print IDF values
+        System.out.println("\n  Term IDF values:");
+        Map<String, Double> termIDF = stats.getTermIDF();
+        if (termIDF != null)
+        {
+            for (Map.Entry<String, Double> entry : termIDF.entrySet())
+            {
+                System.out.println(
+                        "    " + entry.getKey() + ": " + String.format("%.4f", entry.getValue()));
+            }
+        }
+
+        // Print document results
+        Map<String, QDocument> docs = result.getCandidateDocuments();
+        System.out.println("\nFound " + (docs != null ? docs.size() : 0) + " candidate documents:");
+
+        if (docs != null && !docs.isEmpty())
+        {
+            int count = 0;
+            for (Map.Entry<String, QDocument> entry : docs.entrySet())
+            {
+                count++;
+                QDocument doc = entry.getValue();
+                Metadata metadata = doc.getMetadata();
+
+                System.out.println("\n" + count + ". Document: " + entry.getKey());
+
+                // Print all available metadata
+                if (metadata != null)
+                {
+                    // Print title with proper formatting
+                    String title = metadata.getTitle();
+                    if (title != null && !title.isEmpty())
+                    {
+                        System.out.println("   Title: "
+                                + (title.length() > 60 ? title.substring(0, 57) + "..." : title));
+                    }
+                    else
+                    {
+                        System.out.println("   Title: [No title available]");
+                    }
+
+                    System.out.println("   URL: " + metadata.getUrl());
+                    System.out.println(
+                            "   Popularity: " + String.format("%.2f", metadata.getPopularity()));
+                    System.out.println("   Length: " + metadata.getLength() + " words");
+
+                    if (metadata.getPublishDate() != null && !metadata.getPublishDate().isEmpty())
+                    {
+                        System.out.println("   Publish date: " + metadata.getPublishDate());
+                    }
+
+                    // Print snippet if available
+                    String snippet = metadata.getSnippet();
+                    if (snippet != null && !snippet.isEmpty())
+                    {
+                        // Convert HTML formatting to asterisks for console display
+                        snippet = snippet.replaceAll("<b>", "*").replaceAll("</b>", "*");
+                        System.out.println("   Snippet: " + snippet);
+                    }
+                    else
+                    {
+                        System.out.println("   Snippet: [No snippet available]");
+                    }
+                }
+
+                // Print term stats for this document
+                Map<String, TermStats> termStats = doc.getTermStats();
+                if (termStats != null && !termStats.isEmpty())
+                {
+                    System.out.println("   Term statistics:");
+                    for (Map.Entry<String, TermStats> termEntry : termStats.entrySet())
+                    {
+                        TermStats ts = termEntry.getValue();
+                        System.out.println("     " + termEntry.getKey() + ": tf="
+                                + String.format("%.4f", ts.getTf()) + ", inTitle=" + ts.isInTitle()
+                                + ", importance=" + String.format("%.2f", ts.getImportanceScore()));
+                    }
+                }
+
+                // Only show first 5 documents in detail to avoid too much output
+                if (count >= 5 && docs.size() > 5)
+                {
+                    System.out.println("\n...and " + (docs.size() - 5) + " more documents");
+                    break;
+                }
+            }
+        }
+        else
+        {
+            System.out.println("No matching documents found.");
+        }
     }
 
+    // Main method for direct testing
+    public static void main(String[] args)
+    {
+        try
+        {
+            // Initialize the QueryProcessor
+            QueryProcessor processor = new QueryProcessor();
+
+            // Default query if none provided
+            String query = "stack and Java # programming maybe sql";
+            if (args.length > 0)
+            {
+                query = args[0];
+            }
+
+            System.out.println("\nProcessing query: \"" + query + "\"");
+            long startTime = System.currentTimeMillis();
+
+            // Process the query
+            QueryInput result = processor.processTermQuery(query);
+
+            long endTime = System.currentTimeMillis();
+            System.out.println("Query processing time: " + (endTime - startTime) + "ms\n");
+
+            // Print the result details
+            printQueryResults(result);
+
+            // Save to file
+            String filename = "query_result_" + System.currentTimeMillis() + ".json";
+            System.out.println("\nDetailed results saved to: " + filename);
+
+        }
+        catch (Exception e)
+        {
+            System.err.println("Error processing query: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
 }
+
+

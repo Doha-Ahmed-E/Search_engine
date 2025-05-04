@@ -4,6 +4,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import com.example.DatabaseConnection; // From com.example
@@ -182,10 +183,8 @@ public class Indexer
             documentsCollection.insertOne(docEntry);
 
             // Update word index with TF
-            String content = extractCleanText(doc);
             long timestamp = System.currentTimeMillis();
-            updateWordIndex(docId, url, title, wordStats, totalWords, timestamp, popularity,
-                    content);
+            updateWordIndex(docId, url, title, wordStats, totalWords, timestamp, popularity);
             System.out.println("Indexed document: " + url + " (ID: " + docId + ")");
 
             // Update forward index and mark page as indexed
@@ -219,38 +218,89 @@ public class Indexer
             return 0;
 
         // Remove stop words
-        tokens = stopWords.removeStopWords(tokens);
-        if (tokens.isEmpty())
+        List<String> filteredTokens = stopWords.removeStopWords(tokens);
+        if (filteredTokens.isEmpty())
             return 0;
 
-        // Stem tokens and update word statistics
+        // Process tokens
         int wordCount = 0;
-        for (String token : tokens)
+        for (int i = 0; i < filteredTokens.size(); i++)
         {
             try
             {
+                String token = filteredTokens.get(i);
                 String stemmedWord = stemmer.stem(token);
                 if (stemmedWord == null || stemmedWord.isEmpty())
                     continue;
-
                 int position = startPosition + wordCount;
+
+                // Generate snippet from original text
+                String contextSnippet = extractContextSnippet(text, token);
+
+                // Add the occurrence with context
                 wordStats.computeIfAbsent(stemmedWord, k -> new WordStats()).addOccurrence(weight,
-                        position);
+                        position, contextSnippet);
+
                 wordCount++;
             }
             catch (Exception e)
             {
-                // Log error but continue processing other tokens
-                System.err.println("Error processing token '" + token + "': " + e.getMessage());
+                System.err.println("Error processing token '" + filteredTokens.get(i) + "': "
+                        + e.getMessage());
             }
         }
         return wordCount;
     }
 
+    // Helper method to extract context around a token
+    private String extractContextSnippet(String originalText, String token)
+    {
+        // Find the token in the original text
+        int tokenIndex = originalText.toLowerCase().indexOf(token.toLowerCase());
+        if (tokenIndex == -1)
+        {
+            // If exact match not found, return a reasonable substring
+            return originalText.length() <= 150 ? originalText
+                    : originalText.substring(0, 150) + "...";
+        }
+
+        // Determine the snippet boundaries (approximately 100 chars before and after)
+        int snippetStart = Math.max(0, tokenIndex - 150);
+        int snippetEnd = Math.min(originalText.length(), tokenIndex + token.length() + 150);
+
+        // If we're starting mid-sentence, try to find the beginning of the sentence or phrase
+        if (snippetStart > 0)
+        {
+            int periodPos = originalText.lastIndexOf(". ", tokenIndex);
+            if (periodPos != -1 && periodPos > tokenIndex - 150)
+                snippetStart = periodPos + 2; // Start after the period and space
+        }
+
+        // If we're ending mid-sentence, try to find the end of the sentence
+        if (snippetEnd < originalText.length())
+        {
+            int periodPos = originalText.indexOf(".", tokenIndex);
+            if (periodPos != -1 && periodPos < tokenIndex + 150)
+                snippetEnd = Math.min(periodPos + 1, originalText.length());
+        }
+
+        // Extract the snippet
+        String before = originalText.substring(snippetStart, tokenIndex);
+        String highlight = originalText.substring(tokenIndex, tokenIndex + token.length());
+        String after = originalText.substring(tokenIndex + token.length(), snippetEnd);
+
+        // Add ellipsis where needed
+        String prefix = snippetStart > 0 ? "..." : "";
+        String suffix = snippetEnd < originalText.length() ? "..." : "";
+
+        // Return the formatted snippet with highlighted term
+        return prefix + before + "<strong>" + highlight + "</strong>" + after + suffix;
+    }
+
     // Update the inverted index with word statistics
     private void updateWordIndex(String docId, String url, String title,
-            Map<String, WordStats> wordStats, int totalWords, long timestamp, double popularity,
-            String content)
+            Map<String, WordStats> wordStats, int totalWords, long timestamp, double popularity)
+
     {
 
         // Process title the same way as content to get stemmed words
@@ -273,6 +323,9 @@ public class Indexer
             String word = entry.getKey();
             WordStats stats = entry.getValue();
             boolean inTitle = stemmedTitleWords.contains(word);
+            List<String> topSnippets = new ArrayList<>(stats.getContextSnippets().values());
+            List<String> snippets = selectBestSnippets(topSnippets, 3);
+
 
             // Calculate TF: frequency / total_words
             double tf = totalWords > 0 ? (double) stats.getFrequency() / totalWords : 0.0;
@@ -283,7 +336,7 @@ public class Indexer
                     .append("tf", tf).append("importance_score", stats.getImportanceScore())
                     .append("length", totalWords).append("timestamp", timestamp)
                     .append("positions", stats.getPositions()).append("popularity", popularity)
-                    .append("content", content).append("title", title);
+                    .append("title", title).append("snippet", snippets);
 
             // for new words, create a new entry in the inverted index
             // for existing words, update the postings array
@@ -301,6 +354,27 @@ public class Indexer
             invertedIndexCollection.bulkWrite(bulkOperations,
                     new BulkWriteOptions().ordered(false));
         }
+    }
+
+    // Helper method to select best snippets (up to maxSnippets)
+    private List<String> selectBestSnippets(List<String> snippets, int maxSnippets)
+    {
+        if (snippets.size() <= maxSnippets)
+            return snippets;
+
+        snippets.sort((a, b) -> {
+            // Primary sort: prefer snippets with complete sentences
+            boolean aHasPeriod = a.contains(".");
+            boolean bHasPeriod = b.contains(".");
+            if (aHasPeriod != bHasPeriod)
+                return aHasPeriod ? -1 : 1; // Snippets with periods come first
+
+            // Secondary sort: prefer longer snippets for more context
+            return Integer.compare(b.length(), a.length());
+        });
+
+        // Return the top maxSnippets
+        return snippets.subList(0, maxSnippets);
     }
 
     // Compute IDF for a word based on the number of documents containing it
@@ -698,22 +772,6 @@ public class Indexer
         {
             System.err.println("Error cleaning index entries: " + e.getMessage());
         }
-    }
-
-    // Extract clean text from document
-    private String extractCleanText(org.jsoup.nodes.Document doc)
-    {
-        // Extract visible text from body
-        String bodyText = doc.body().text();
-
-        // Limit length to avoid excessive storage
-        int maxChars = 15000; // ~15KB of text is usually enough for snippets
-        if (bodyText.length() > maxChars)
-        {
-            bodyText = bodyText.substring(0, maxChars) + "...";
-        }
-
-        return bodyText;
     }
 
     // main method to start the indexing process
