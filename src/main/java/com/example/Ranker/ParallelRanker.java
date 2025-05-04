@@ -2,15 +2,12 @@ package com.example.Ranker;
 
 import com.example.QueryProcessor.QDocument;
 import com.example.QueryProcessor.TermStats;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import java.io.File;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
 public class ParallelRanker {
-    private final double titleBoost = 2.0;
+    private final double titleBoost = 5.0;
     private final double alpha = 0.7;
     private final int THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors();
     private final int PARALLEL_THRESHOLD = 2000;

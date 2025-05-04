@@ -49,6 +49,11 @@ public class DatabaseConnection
         return database;
     }
 
+    public static MongoClient getMongoClient()
+    {
+        return mongoClient;
+    }
+    
     public static void closeConnection()
     {
         if (mongoClient != null)

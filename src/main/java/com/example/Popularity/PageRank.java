@@ -1,197 +1,215 @@
 package com.example.Popularity;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import org.bson.Document;
-
-import com.mongodb.client.MongoClient;
-import com.mongodb.client.MongoClients;
+import com.example.DatabaseConnection;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.UpdateOneModel;
+import com.mongodb.client.model.WriteModel;
+import org.bson.Document;
 
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
-
-public class PageRank
-{
+public class PageRank {
     private static final double DAMPING_FACTOR = 0.85;
     private static final double EPSILON = 1e-6;
     private static final int MAX_ITERATIONS = 100;
+    private static final int BATCH_SIZE = 1000;
 
-    private static final String MONGO_URI = "mongodb+srv://APTteam:s0sapt_proj_s0s325@searchcluster.llposxz.mongodb.net/SearchDB?retryWrites=true&w=majority";
-    private static final String DB_NAME = "faragDB";
-    private static final String COLLECTION_NAME = "pages";
+    private final MongoCollection<Document> pagesCollection;
+    private final MongoCollection<Document> documentsCollection;
 
-    public static Map<String, Double> computePageRank(Map<String, List<String>> graph)
-    {
-        final int N = graph.size();
-        final Map<String, Double> pr = new HashMap<>();
-        final double initialRank = 1.0 / N;
-
-        for (String page : graph.keySet())
-        {
-            pr.put(page, initialRank);
-        }
-
-        Map<String, Double> currentPr = new HashMap<>(pr);
-
-        for (int iter = 0; iter < MAX_ITERATIONS; iter++)
-        {
-            Map<String, Double> newPr = new HashMap<>();
-
-            final Map<String, Double> finalPr = currentPr;
-            double danglingMass = graph.entrySet().stream().filter(e -> e.getValue().isEmpty())
-                    .mapToDouble(e -> finalPr.get(e.getKey())).sum();
-
-            double teleport = (1 - DAMPING_FACTOR) / N;
-            double danglingContribution = DAMPING_FACTOR * danglingMass / N;
-
-            for (String page : graph.keySet())
-            {
-                double incomingSum = 0.0;
-                for (Map.Entry<String, List<String>> entry : graph.entrySet())
-                {
-                    if (entry.getValue().contains(page))
-                    {
-                        incomingSum += currentPr.get(entry.getKey()) / entry.getValue().size();
-                    }
-                }
-                newPr.put(page, teleport + DAMPING_FACTOR * incomingSum + danglingContribution);
-            }
-
-            double sum = newPr.values().stream().mapToDouble(Double::doubleValue).sum();
-            for (String page : newPr.keySet())
-            {
-                newPr.put(page, newPr.get(page) / sum);
-            }
-
-            sum = newPr.values().stream().mapToDouble(Double::doubleValue).sum();
-            System.out.printf("Iter %d: Sum=%.6f Dangling=%.6f%n", iter, sum, danglingMass);
-
-            if (converged(currentPr, newPr))
-            {
-                System.out.println("Converged after " + (iter + 1) + " iterations");
-                currentPr = newPr;
-                break;
-            }
-            currentPr = newPr;
-        }
-        return currentPr;
+    public PageRank() {
+        MongoDatabase database = DatabaseConnection.getDatabase();
+        this.pagesCollection = database.getCollection("pages");
+        this.documentsCollection = database.getCollection("documents");
     }
 
-    private static boolean converged(Map<String, Double> oldPr, Map<String, Double> newPr)
-    {
-        for (String page : oldPr.keySet())
-        {
-            if (Math.abs(oldPr.get(page) - newPr.get(page)) > EPSILON)
-            {
-                return false;
+    public void computeAndStorePageRanks() {
+        try {
+            System.out.println("Starting PageRank computation...");
+            
+            // Step 1: Build the web graph from database
+            Map<String, List<String>> graph = buildGraphFromDatabase();
+            
+            if (graph.isEmpty()) {
+                System.out.println("No documents found to compute PageRank");
+                return;
             }
+
+            // Step 2: Compute PageRank scores
+            Map<String, Double> ranks = computePageRank(graph);
+
+            // Step 3: Update pages with PageRank scores
+            updatePagesWithPageRank(ranks);
+
+            System.out.println("PageRank computation completed successfully");
+        } catch (Exception e) {
+            System.err.println("Error in PageRank computation: " + e.getMessage());
+            e.printStackTrace();
         }
-        return true;
     }
 
-    public static Map<String, List<String>> buildGraphFromDataBase()
-    {
-        Map<String, List<String>> graph = new HashMap<>();
+    private Map<String, List<String>> buildGraphFromDatabase() {
+        Map<String, List<String>> graph = new ConcurrentHashMap<>();
+        long totalDocuments = pagesCollection.countDocuments();
+        System.out.println("Building graph from " + totalDocuments + " documents");
 
-        try (MongoClient mongoClient = MongoClients.create(MONGO_URI))
-        {
-            MongoDatabase database = mongoClient.getDatabase(DB_NAME);
-            MongoCollection<Document> collection = database.getCollection(COLLECTION_NAME);
-
-
-            System.out.println("Total documents in collection: " + collection.countDocuments());
-            int count = 0;
-            for (Document doc : collection.find())
-            {
+        // Process in batches to handle large collections
+        int processed = 0;
+        for (Document doc : pagesCollection.find()) {
+            try {
                 String url = doc.getString("url");
                 List<String> outgoingLinks = doc.getList("outgoingLinks", String.class);
 
-                System.out.println("Processing URL: " + url);
-                System.out.println("Found " + (outgoingLinks != null ? outgoingLinks.size() : 0)
-                        + " outgoing links " + count);
+                if (url != null && !url.isEmpty()) {
+                    // Normalize URLs and filter out invalid ones
+                    List<String> validLinks = outgoingLinks != null ? 
+                        outgoingLinks.stream()
+                            .filter(link -> link != null && !link.isEmpty())
+                            .collect(Collectors.toList()) : 
+                        Collections.emptyList();
 
+                    graph.put(url, validLinks);
+                    processed++;
 
-                List<String> last = graph.put(url, outgoingLinks);
-                if (last == null)
-                    count++;
-
+                    if (processed % BATCH_SIZE == 0) {
+                        System.out.println("Processed " + processed + " documents");
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Error processing document: " + e.getMessage());
             }
-            System.out.println("=============================");
-            System.out.println(count);
-            System.out.println("=============================");
+        }
 
-        }
-        catch (Exception e)
-        {
-            System.err.println("ERROR: " + e.getMessage());
-            e.printStackTrace();
-        }
-        System.out.println("Graph contains " + graph.size() + " nodes");
+        System.out.println("Graph construction complete. Total nodes: " + graph.size());
         return graph;
     }
 
-    public static void matchDocumentWithPageRank(Map<String, Double> ranks)
-    {
-        try (MongoClient mongoClient = MongoClients.create(MONGO_URI))
-        {
-            MongoDatabase database = mongoClient.getDatabase(DB_NAME);
-            MongoCollection<Document> collection = database.getCollection(COLLECTION_NAME);
-
-            for (Document doc : collection.find())
-            {
-                String url = doc.getString("url");
-                double pageRank;
-
-                if (ranks.containsKey(url))
-                {
-                    pageRank = ranks.get(url);
-                }
-                else
-                {
-                    System.err.println("WARNING: URL not found in PageRank results: " + url);
-                    pageRank = 0.0;
-                }
-                
-                collection.updateOne(
-                    new Document("url", url), 
-                    new Document("$set", new Document("popularity", pageRank)) 
-                );
-
+    private Map<String, Double> computePageRank(Map<String, List<String>> graph) {
+        final int N = graph.size();
+        System.out.println("Computing PageRank for " + N + " pages");
+    
+        // Initialize PageRank values
+        Map<String, Double>[] currentPrHolder = new Map[]{new ConcurrentHashMap<>()}; // Using array to hold mutable reference
+        double initialRank = 1.0 / N;
+        graph.keySet().forEach(page -> currentPrHolder[0].put(page, initialRank));
+    
+        // Precompute incoming links for faster access
+        Map<String, List<String>> incomingLinks = precomputeIncomingLinks(graph);
+    
+        // Iterative PageRank computation
+        for (int iter = 0; iter < MAX_ITERATIONS; iter++) {
+            Map<String, Double> newPr = new ConcurrentHashMap<>();
+    
+            // Calculate dangling nodes contribution
+            double danglingMass = graph.entrySet().parallelStream()
+                .filter(e -> e.getValue().isEmpty())
+                .mapToDouble(e -> currentPrHolder[0].get(e.getKey()))
+                .sum();
+    
+            final double teleport = (1 - DAMPING_FACTOR) / N;
+            final double danglingContribution = DAMPING_FACTOR * danglingMass / N;
+    
+            // Compute new PageRank for each page
+            graph.keySet().parallelStream().forEach(page -> {
+                double incomingSum = incomingLinks.getOrDefault(page, Collections.emptyList())
+                    .parallelStream()
+                    .mapToDouble(incomingPage -> {
+                        int outDegree = graph.get(incomingPage).size();
+                        return outDegree > 0 ? currentPrHolder[0].get(incomingPage) / outDegree : 0;
+                    })
+                    .sum();
+    
+                double newRank = teleport + DAMPING_FACTOR * incomingSum + danglingContribution;
+                newPr.put(page, newRank);
+            });
+    
+            // Normalize to ensure sum = 1 (handles floating point errors)
+            double sum = newPr.values().parallelStream().mapToDouble(Double::doubleValue).sum();
+            newPr.replaceAll((k, v) -> v / sum);
+    
+            System.out.printf("Iteration %d: Sum=%.6f Dangling=%.6f%n", iter + 1, sum, danglingMass);
+    
+            // Check for convergence
+            if (converged(currentPrHolder[0], newPr)) {
+                System.out.println("Converged after " + (iter + 1) + " iterations");
+                currentPrHolder[0] = newPr;
+                break;
             }
-            System.out.println("Updated all documents with PageRank values.");
+            currentPrHolder[0] = newPr;
         }
-        catch (Exception e)
-        {
-            System.err.println("ERROR updating MongoDB: " + e.getMessage());
-            e.printStackTrace();
-        }
+    
+        return currentPrHolder[0];
     }
 
-    public static void main(String[] args)
-    {
-        Map<String, List<String>> graph = buildGraphFromDataBase();
+    private Map<String, List<String>> precomputeIncomingLinks(Map<String, List<String>> graph) {
+        Map<String, List<String>> incomingLinks = new ConcurrentHashMap<>();
+        
+        graph.forEach((page, outgoing) -> {
+            outgoing.forEach(link -> {
+                incomingLinks.computeIfAbsent(link, k -> new ArrayList<>()).add(page);
+            });
+        });
+        
+        return incomingLinks;
+    }
 
-        Map<String, Double> ranks = computePageRank(graph);
+    private boolean converged(Map<String, Double> oldPr, Map<String, Double> newPr) {
+        return oldPr.keySet().parallelStream()
+            .allMatch(page -> Math.abs(oldPr.get(page) - newPr.get(page)) <= EPSILON);
+    }
 
-
-        System.out.println("\nPageRank Results:");
-
-        int count = 0;
-        for (Map.Entry<String, Double> entry : ranks.entrySet())
-        {
-            String url = entry.getKey();
-            Double score = entry.getValue();
-            System.out.printf("%s: %.6f%n", url, score);
-            count++;
+    private void updatePagesWithPageRank(Map<String, Double> ranks) {
+        System.out.println("Updating pages with PageRank values");
+        int updatedCount = 0;
+        
+        // Process in batches for better performance
+        List<WriteModel<Document>> batchUpdates = new ArrayList<>();
+        
+        for (Document page : pagesCollection.find()) {
+            try {
+                String url = page.getString("url");
+                if (url != null && !url.isEmpty() && ranks.containsKey(url)) {
+                    double pageRank = ranks.get(url);
+                    
+                    batchUpdates.add(new UpdateOneModel<>(
+                        new Document("url", url),
+                        new Document("$set", new Document("popularity", pageRank))
+                    ));
+                    
+                    if (batchUpdates.size() >= BATCH_SIZE) {
+                        pagesCollection.bulkWrite(batchUpdates);
+                        updatedCount += batchUpdates.size();
+                        batchUpdates.clear();
+                        System.out.println("Updated " + updatedCount + " pages");
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Error updating page: " + e.getMessage());
+            }
         }
+        
+        // Process remaining updates
+        if (!batchUpdates.isEmpty()) {
+            pagesCollection.bulkWrite(batchUpdates);
+            updatedCount += batchUpdates.size();
+            System.out.println("Updated final batch of " + batchUpdates.size() + " pages");
+        }
+        
+        System.out.println("Successfully updated " + updatedCount + " pages with PageRank values");
+    }
 
-        double sum = ranks.values().stream().mapToDouble(Double::doubleValue).sum();
-        System.out.printf("\nSum of all PageRanks: %.6f%n", sum);
-        System.out.println("the count is " + count);
-
-        matchDocumentWithPageRank(ranks);
+    public static void main(String[] args) {
+        try {
+            PageRank pageRank = new PageRank();
+            pageRank.computeAndStorePageRanks();
+        } catch (Exception e) {
+            System.err.println("Error in PageRank main execution: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            DatabaseConnection.closeConnection();
+        }
     }
 }
