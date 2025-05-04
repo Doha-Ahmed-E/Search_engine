@@ -181,7 +181,7 @@ public class Indexer
                 return;
 
             // Save document metadata
-            Document docEntry = new Document().append("doc_id", docId)
+            Document docEntry = new Document().append("doc_id", docId);
 
                     
 
