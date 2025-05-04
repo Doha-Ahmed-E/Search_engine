@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Search, ArrowRight } from 'lucide-react';
@@ -10,10 +11,10 @@ const fullscreenStyle = {
   left: 0,
   width: '100vw',
   height: '100vh',
-  backgroundColor: '#0f172a', 
+  backgroundColor: '#0f172a',
   margin: 0,
   padding: 0,
-  overflow: 'auto' 
+  overflow: 'auto',
 };
 
 export default function SearchResult() {
@@ -23,7 +24,8 @@ export default function SearchResult() {
   const [searchQuery, setSearchQuery] = useState(searchData.query || '');
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
-  
+  const [searchTime, setSearchTime] = useState(null); // <- New state to track time
+
   // Load results when component mounts or query changes
   useEffect(() => {
     if (searchData.query) {
@@ -33,12 +35,19 @@ export default function SearchResult() {
 
   const handleSearchFromQuery = async (query) => {
     if (!query.trim()) return;
-    
+
     setLoading(true);
+    setSearchTime(null); // Reset time before starting new search
+
+    const startTime = performance.now(); // Start timing
+
     try {
       const data = await search(query);
       console.log('Search results:', data);
       setResults(data);
+
+      const endTime = performance.now(); // End timing
+      setSearchTime(Math.round(endTime - startTime)); // Save time in ms (rounded)
     } catch (error) {
       console.error('Search error:', error);
       setResults(null);
@@ -49,14 +58,13 @@ export default function SearchResult() {
 
   const handleSearch = (e) => {
     e.preventDefault();
-    navigate('/search-result', { 
-      state: { 
+    navigate('/search-result', {
+      state: {
         query: searchQuery,
-      } 
+      },
     });
     handleSearchFromQuery(searchQuery);
   };
-
 
   return (
     <div style={fullscreenStyle}>
@@ -65,7 +73,7 @@ export default function SearchResult() {
           <h2 className="text-blue-400 text-xl font-bold mr-4">
             Search<span className="text-purple-400">Now</span>
           </h2>
-          
+
           <form onSubmit={handleSearch} className="flex-1 relative">
             <div className="flex items-center bg-white rounded-full shadow-lg overflow-hidden">
               <div className="pl-3">
@@ -80,8 +88,8 @@ export default function SearchResult() {
                 disabled={loading}
               />
             </div>
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               className="absolute right-0 top-0 bottom-0 bg-black text-white px-4 rounded-r-full flex items-center justify-center"
               disabled={loading}
             >
@@ -96,17 +104,17 @@ export default function SearchResult() {
       </div>
 
       <div className="max-w-5xl mx-auto p-6 pt-4">
-        <p className="text-gray-300 mb-6">
-          {loading ? (
-            'Searching...'
-          ) : (
-            `Results for: ${searchData.query || 'All'}`
-          )}
+        <p className="text-gray-300 mb-2">
+          {loading ? 'Searching...' : `Results for: ${searchQuery || 'All'}`}
         </p>
-        
-        <ResultComponent 
-          result={results || []} 
-        />
+
+        {searchTime !== null && !loading && (
+          <p className="text-gray-400 text-sm mb-6">
+            Search completed in {searchTime} ms
+          </p>
+        )}
+
+        <ResultComponent result={results || []} />
       </div>
     </div>
   );
