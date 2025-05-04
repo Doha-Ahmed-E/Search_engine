@@ -120,6 +120,10 @@ public class Indexer
             String title = crawledDoc.getTitle();
             double popularity = crawledDoc.getPopularity();
 
+            System.out.println("==============================================");
+            System.out.println("popularity: " + popularity);
+            System.out.println("==============================================");
+
             // Check for null or empty content
             if (htmlContent == null || htmlContent.isEmpty())
                 return;
@@ -177,9 +181,10 @@ public class Indexer
 
             // Save document metadata
             Document docEntry = new Document().append("doc_id", docId)
+                    .append("popularity", popularity)
                     .append("content_hash", contentHash).append("url", url).append("title", title)
                     .append("processed_text", extractCleanText(doc))
-                    .append("popularity", popularity).append("indexed_at", new Date());
+                    .append("indexed_at", new Date());
 
             documentsCollection.insertOne(docEntry);
 
@@ -498,8 +503,8 @@ public class Indexer
                     .println("Processing document " + docCount + ": _id=" + doc.getObjectId("_id"));
             System.out.println("Document fields: url=" + doc.getString("url") + ", title="
                     + doc.getString("title") + ", content="
-                    + (doc.getString("content") != null ? "[present]" : "null") + ", Popularity="
-                    + doc.get("Popularity") + ", indexed=" + doc.get("indexed"));
+                    + (doc.getString("content") != null ? "[present]" : "null") + ", popularity="
+                    + doc.get("popularity") + ", indexed=" + doc.get("indexed"));
 
             executor.submit(() -> {
                 try
@@ -526,9 +531,9 @@ public class Indexer
                         errorCount.incrementAndGet();
                         return;
                     }
-                    if (!doc.containsKey("Popularity"))
+                    if (!doc.containsKey("popularity"))
                     {
-                        System.err.println("Document missing 'Popularity' field: _id="
+                        System.err.println("Document missing 'popularity' field: _id="
                                 + doc.getObjectId("_id"));
                         errorCount.incrementAndGet();
                         return;
@@ -537,7 +542,7 @@ public class Indexer
                     String url = doc.getString("url");
                     String content = doc.getString("content");
                     String title = doc.getString("title");
-                    double popularity = doc.getDouble("Popularity");
+                    double popularity = doc.getDouble("popularity");
 
                     // Create CrawledDoc
                     System.out.println("Creating CrawledDoc for URL: " + url);

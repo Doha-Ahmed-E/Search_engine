@@ -78,7 +78,9 @@ public class ParallelRanker {
         double popularity = doc != null && doc.getMetadata() != null ? doc.getMetadata().getPopularity() : 0.0;
         double score = alpha * relevance + (1 - alpha) * popularity;
         String URL = doc.getMetadata().getUrl();
-        return new RankedDocument(docId, score, relevance, popularity,URL);
+        String snippet = doc.getMetadata().getSnippet();
+        String title = doc.getMetadata().getTitle();
+        return new RankedDocument(docId, score, relevance, popularity,URL,snippet,title);
     }
     
     private double computeRelevanceScore(QueryInput input, QDocument doc) {
