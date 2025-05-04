@@ -8,6 +8,7 @@ import com.example.Indexer.StopWords;
 import com.example.Indexer.Tokenizer;
 import com.example.Ranker.QueryInput;
 import com.example.Ranker.RankedDocument;
+import com.example.util.TypeSafeUtil;
 import com.example.Ranker.ParallelRanker;
 import org.bson.Document;
 import org.springframework.stereotype.Component;
@@ -562,62 +563,127 @@ public class QueryProcessor
     {
         if (posting == null)
             return;
-        String docId = posting.getString("doc_id");
-        Document fullDoc = documentsCollection.find(Filters.eq("doc_id", docId)).first();
-        double popularity = 0.0;
-        String title = "";
-        String snippet = "";
-        if (fullDoc != null)
-        {
-            // popularity = fullDoc.getDouble("popularity");
-            title = fullDoc.getString("title");
-            List<String> termsInDoc = new ArrayList<>(qDoc.getTermStats().keySet());
-            snippet = generateSnippet(termsInDoc, fullDoc);
-        }
+
+
+        // Get pre-computed snippets from the posting
+        List<String> snippets = TypeSafeUtil.safeStringList(posting.get("snippet"));
+        String bestSnippet =
+                selectBestSnippetForTerms(new ArrayList<>(qDoc.getTermStats().keySet()), snippets);
 
         Metadata metadata = new Metadata();
         metadata.setUrl(posting.getString("url"));
-        metadata.setPopularity(popularity);
-        metadata.setTitle(title);
-        metadata.setSnippet(snippet);
+        metadata.setPopularity(
+                posting.containsKey("popularity") ? posting.getDouble("popularity") : 0.0);
+        metadata.setTitle(posting.getString("title"));
+        metadata.setSnippet(bestSnippet);
         metadata.setLength(posting.getInteger("length", 0));
-        Long timestamp = posting.getLong("timestamp");
 
         qDoc.setMetadata(metadata);
     }
 
-    private String generateSnippet(List<String> queryTerms, Document fullDoc)
+    private String selectBestSnippetForTerms(List<String> queryTerms, List<String> snippets)
     {
-        // Get content from documents collection
-        if (fullDoc != null && fullDoc.containsKey("processed_text"))
+        if (snippets == null || snippets.isEmpty())
+            return "No preview available";
+
+        // If only one snippet, return it
+        if (snippets.size() == 1)
+            return snippets.get(0);
+
+        // If we have very few terms and snippets, consider joining them
+        if (queryTerms.size() > 1 && snippets.size() <= 5)
         {
-            String processedText = fullDoc.getString("processed_text");
-            return findBestSnippet(processedText, queryTerms, 150);
+            return joinSnippetsForDifferentTerms(queryTerms, snippets);
         }
-        return "No preview available";
-    }
 
-    private String findBestSnippet(String text, List<String> queryTerms, int snippetLength)
-    {
-        String[] words = text.split("\\s+");
-        int bestStart = 0;
-        int bestMatchCount = 0;
-
-        for (int i = 0; i < words.length; i++)
+        // Otherwise use existing scoring logic for single best snippet
+        Map<String, Integer> snippetScores = new HashMap<>();
+        for (String snippet : snippets)
         {
-            int matchCount = 0;
-            for (int j = i; j < Math.min(i + snippetLength, words.length); j++)
-                if (queryTerms.contains(words[j].toLowerCase()))
-                    matchCount++;
+            int score = 0;
+            String lowerSnippet = snippet.toLowerCase();
 
-            if (matchCount > bestMatchCount)
+            for (String term : queryTerms)
             {
-                bestMatchCount = matchCount;
-                bestStart = i;
+                if (lowerSnippet.contains(term.toLowerCase()))
+                {
+                    score++;
+                    // Bonus points if the term is highlighted
+                    String highlightPattern = "<strong>" + term + "</strong>";
+                    if (lowerSnippet.contains(highlightPattern.toLowerCase()))
+                        score += 2;
+                }
             }
+            snippetScores.put(snippet, score);
         }
-        int end = Math.min(bestStart + snippetLength, words.length);
-        return String.join(" ", Arrays.copyOfRange(words, bestStart, end));
+        // Return the snippet with the highest score
+        return snippets.stream().max(Comparator.comparingInt(snippetScores::get))
+                .orElse(snippets.get(0)); // Fallback to first snippet if scoring fails
     }
 
+    private String joinSnippetsForDifferentTerms(List<String> queryTerms, List<String> snippets)
+    {
+        // Track best snippet for each query term
+        Map<String, String> bestSnippetPerTerm = new HashMap<>();
+
+        // Find best snippet for each term
+        for (String term : queryTerms)
+        {
+            String bestForTerm = null;
+            int bestScore = -1;
+
+            for (String snippet : snippets)
+            {
+                String lowerSnippet = snippet.toLowerCase();
+                String lowerTerm = term.toLowerCase();
+
+                if (lowerSnippet.contains(lowerTerm))
+                {
+                    int score = 0;
+
+                    // Score based on how central the term is in the snippet
+                    int termPos = lowerSnippet.indexOf(lowerTerm);
+                    int snippetCenter = lowerSnippet.length() / 2;
+                    int distanceFromCenter = Math.abs(termPos - snippetCenter);
+                    score += 100 - Math.min(100, distanceFromCenter);
+
+                    // Bonus if term is highlighted
+                    String highlightPattern = "<strong>" + term + "</strong>";
+                    if (lowerSnippet.contains(highlightPattern.toLowerCase()))
+                        score += 50;
+
+                    // Update best snippet for this term if needed
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestForTerm = snippet;
+                    }
+                }
+            }
+
+            // Store best snippet for this term
+            if (bestForTerm != null)
+                bestSnippetPerTerm.put(term, bestForTerm);
+        }
+
+        // If we couldn't find specific snippets for terms, fall back to default method
+        if (bestSnippetPerTerm.isEmpty())
+            return snippets.get(0);
+
+
+        // Join distinct snippets with a separator
+        List<String> distinctSnippets =
+                new ArrayList<>(new LinkedHashSet<>(bestSnippetPerTerm.values()));
+
+        // Limit to at most 3 snippets to avoid too long results
+        if (distinctSnippets.size() > 3)
+            distinctSnippets = distinctSnippets.subList(0, 3);
+
+        // Join with separator
+        return String.join(" ... | ... ", distinctSnippets);
+    }
+
+    
 }
+
+
