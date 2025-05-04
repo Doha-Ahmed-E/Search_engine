@@ -120,6 +120,10 @@ public class Indexer
             String title = crawledDoc.getTitle();
             double popularity = crawledDoc.getPopularity();
 
+            System.out.println("==============================================");
+            System.out.println("popularity: " + popularity);
+            System.out.println("==============================================");
+
             // Check for null or empty content
             if (htmlContent == null || htmlContent.isEmpty())
                 return;
@@ -177,7 +181,9 @@ public class Indexer
 
             // Save document metadata
             Document docEntry = new Document().append("doc_id", docId)
+
                     .append("content_hash", contentHash).append("url", url);
+
 
             documentsCollection.insertOne(docEntry);
 
@@ -496,6 +502,7 @@ public class Indexer
         for (Document doc : pagesCollection.find(query).skip(skip).limit(limit))
         {
             docCount++;
+
 
             executor.submit(() -> {
                 try

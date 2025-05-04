@@ -565,6 +565,8 @@ public class QueryProcessor
 
         String snippet = "";
 
+
+
         Metadata metadata = new Metadata();
         metadata.setUrl(posting.getString("url"));
         metadata.setPopularity(

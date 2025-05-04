@@ -57,29 +57,6 @@ export default function SearchResult() {
     handleSearchFromQuery(searchQuery);
   };
 
-  // Transform API results to match your article format
-  const transformResults = (apiResults) => {
-    if (!apiResults?.candidateDocuments) return [];
-    
-    return Object.entries(apiResults.candidateDocuments).map(([id, doc]) => ({
-      id,
-      url: doc.metadata?.url || `https://example.com/${id}`,
-      title: doc.metadata?.title || `Result for ${searchQuery}`,
-      content: Object.entries(doc.termStats || {})
-        .map(([term, stats]) => `${term} (relevance: ${stats.importanceScore.toFixed(2)})`)
-        .join(', '),
-      popularity: doc.metadata?.popularity || 0
-    }));
-  };
-
-  const articles = results ? transformResults(results) : [
-    // Default/fallback articles when no results
-    {
-      url: `https://example.com/${searchQuery}`,
-      title: "Search Results Loading...",
-      content: loading ? "Fetching results..." : "No results found for your query."
-    }
-  ];
 
   return (
     <div style={fullscreenStyle}>
@@ -128,8 +105,7 @@ export default function SearchResult() {
         </p>
         
         <ResultComponent 
-          Result={articles} 
-          loading={loading}
+          result={results || []} 
         />
       </div>
     </div>
