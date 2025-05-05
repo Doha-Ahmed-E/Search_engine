@@ -28,7 +28,6 @@ export default function SearchResult() {
   const resultsPerPage = 10;
 
   const [searchHistory, setSearchHistory] = useState(() => {
-    // Initialize state with localStorage value
     if (typeof window !== 'undefined') {
       const storedHistory = localStorage.getItem('searchHistory');
       return storedHistory ? JSON.parse(storedHistory) : [];
@@ -45,7 +44,6 @@ export default function SearchResult() {
   }, [searchData.query]);
 
   useEffect(() => {
-    // Save to localStorage whenever searchHistory changes
     localStorage.setItem('searchHistory', JSON.stringify(searchHistory));
   }, [searchHistory]);
 
@@ -139,42 +137,48 @@ export default function SearchResult() {
 
           <form onSubmit={handleSearch} className="flex-1 relative" ref={dropdownRef}>
             <div className="flex items-center bg-white rounded-full shadow-lg overflow-hidden relative">
-              <div className="pl-3">
-                <Search className="h-4 w-4 text-gray-400" />
+              <div className="pl-4">
+                <Search className="h-5 w-5 text-gray-400" />
               </div>
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onFocus={() => setShowDropdown(true)}
-                className="w-full py-2 px-3 outline-none text-black text-sm"
+                className="w-full py-4 px-4 outline-none text-black text-lg"
                 placeholder="Search the web..."
                 disabled={loading}
               />
             </div>
             <button
               type="submit"
-              className="absolute right-0 top-0 bottom-0 bg-black text-white px-4 rounded-r-full flex items-center justify-center"
+              className="absolute right-0 top-0 bottom-0 bg-black text-white px-8 rounded-r-full flex items-center justify-center"
               disabled={loading}
             >
               {loading ? (
                 <span className="animate-pulse">...</span>
               ) : (
-                <ArrowRight className="h-4 w-4" />
+                <ArrowRight className="h-5 w-5" />
               )}
             </button>
 
             {showDropdown && searchHistory.length > 0 && (
-              <div className="absolute top-12 left-0 right-0 bg-white shadow-lg rounded-md z-20 max-h-60 overflow-y-auto">
-                {searchHistory.map((item, index) => (
-                  <div
-                    key={index}
-                    onClick={() => handleHistoryClick(item)}
-                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 cursor-pointer"
-                  >
-                    {item}
+              <div className="absolute top-full left-0 right-0 mt-2 bg-white shadow-lg rounded-md z-20 max-h-60 overflow-y-auto custom-scrollbar">
+                <div className="py-1">
+                  <div className="px-4 py-2 text-sm text-gray-500 border-b border-gray-100">
+                    Recent searches
                   </div>
-                ))}
+                  {searchHistory.map((item, index) => (
+                    <div
+                      key={index}
+                      onClick={() => handleHistoryClick(item)}
+                      className="px-4 py-3 text-lg text-gray-700 hover:bg-gray-100 cursor-pointer flex items-center"
+                    >
+                      <Search className="h-4 w-4 text-gray-400 mr-3" />
+                      {item}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </form>
@@ -226,6 +230,23 @@ export default function SearchResult() {
           </div>
         )}
       </div>
+
+      <style jsx>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: #f1f1f1;
+          border-radius: 0 4px 4px 0;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: #c1c1c1;
+          border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: #a8a8a8;
+        }
+      `}</style>
     </div>
   );
 }
