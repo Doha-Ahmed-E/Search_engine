@@ -1,5 +1,4 @@
-
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Search, ArrowRight } from 'lucide-react';
 import ResultComponent from './ResultComponent';
@@ -22,35 +21,67 @@ export default function SearchResult() {
   const navigate = useNavigate();
   const searchData = location.state || {};
   const [searchQuery, setSearchQuery] = useState(searchData.query || '');
-  const [results, setResults] = useState(null);
+  const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [searchTime, setSearchTime] = useState(null); // <- New state to track time
+  const [searchTime, setSearchTime] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const resultsPerPage = 10;
 
-  // Load results when component mounts or query changes
+  const [searchHistory, setSearchHistory] = useState(() => {
+    // Initialize state with localStorage value
+    if (typeof window !== 'undefined') {
+      const storedHistory = localStorage.getItem('searchHistory');
+      return storedHistory ? JSON.parse(storedHistory) : [];
+    }
+    return [];
+  });
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef(null);
+
   useEffect(() => {
     if (searchData.query) {
       handleSearchFromQuery(searchData.query);
     }
   }, [searchData.query]);
 
+  useEffect(() => {
+    // Save to localStorage whenever searchHistory changes
+    localStorage.setItem('searchHistory', JSON.stringify(searchHistory));
+  }, [searchHistory]);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
   const handleSearchFromQuery = async (query) => {
     if (!query.trim()) return;
 
     setLoading(true);
-    setSearchTime(null); // Reset time before starting new search
+    setSearchTime(null);
+    setCurrentPage(1);
 
-    const startTime = performance.now(); // Start timing
+    updateSearchHistory(query);
+
+    const startTime = performance.now();
 
     try {
       const data = await search(query);
       console.log('Search results:', data);
       setResults(data);
 
-      const endTime = performance.now(); // End timing
-      setSearchTime(Math.round(endTime - startTime)); // Save time in ms (rounded)
+      const endTime = performance.now();
+      setSearchTime(Math.round(endTime - startTime));
     } catch (error) {
       console.error('Search error:', error);
-      setResults(null);
+      setResults([]);
     } finally {
       setLoading(false);
     }
@@ -64,6 +95,38 @@ export default function SearchResult() {
       },
     });
     handleSearchFromQuery(searchQuery);
+    setShowDropdown(false);
+  };
+
+  const updateSearchHistory = (query) => {
+    setSearchHistory(prevHistory => {
+      const updatedHistory = prevHistory.filter(item => item !== query);
+      updatedHistory.unshift(query);
+      return updatedHistory.slice(0, 10);
+    });
+  };
+
+  const handleHistoryClick = (query) => {
+    setSearchQuery(query);
+    handleSearchFromQuery(query);
+    setShowDropdown(false);
+  };
+
+  const indexOfLastResult = currentPage * resultsPerPage;
+  const indexOfFirstResult = indexOfLastResult - resultsPerPage;
+  const currentResults = results.slice(indexOfFirstResult, indexOfLastResult);
+  const totalPages = Math.ceil(results.length / resultsPerPage);
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage((prev) => prev + 1);
+    }
+  };
+
+  const handlePrevPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage((prev) => prev - 1);
+    }
   };
 
   return (
@@ -74,8 +137,8 @@ export default function SearchResult() {
             Search<span className="text-purple-400">Now</span>
           </h2>
 
-          <form onSubmit={handleSearch} className="flex-1 relative">
-            <div className="flex items-center bg-white rounded-full shadow-lg overflow-hidden">
+          <form onSubmit={handleSearch} className="flex-1 relative" ref={dropdownRef}>
+            <div className="flex items-center bg-white rounded-full shadow-lg overflow-hidden relative">
               <div className="pl-3">
                 <Search className="h-4 w-4 text-gray-400" />
               </div>
@@ -83,6 +146,7 @@ export default function SearchResult() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => setShowDropdown(true)}
                 className="w-full py-2 px-3 outline-none text-black text-sm"
                 placeholder="Search the web..."
                 disabled={loading}
@@ -99,6 +163,20 @@ export default function SearchResult() {
                 <ArrowRight className="h-4 w-4" />
               )}
             </button>
+
+            {showDropdown && searchHistory.length > 0 && (
+              <div className="absolute top-12 left-0 right-0 bg-white shadow-lg rounded-md z-20 max-h-60 overflow-y-auto">
+                {searchHistory.map((item, index) => (
+                  <div
+                    key={index}
+                    onClick={() => handleHistoryClick(item)}
+                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 cursor-pointer"
+                  >
+                    {item}
+                  </div>
+                ))}
+              </div>
+            )}
           </form>
         </div>
       </div>
@@ -114,7 +192,39 @@ export default function SearchResult() {
           </p>
         )}
 
-        <ResultComponent result={results || []} />
+        <ResultComponent result={currentResults} />
+
+        {results.length > 0 && !loading && (
+          <div className="flex items-center justify-between mt-6">
+            <button
+              onClick={handlePrevPage}
+              disabled={currentPage === 1}
+              className={`px-4 py-2 rounded ${
+                currentPage === 1
+                  ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+            >
+              Previous
+            </button>
+
+            <span className="text-gray-300">
+              Page {currentPage} of {totalPages}
+            </span>
+
+            <button
+              onClick={handleNextPage}
+              disabled={currentPage === totalPages}
+              className={`px-4 py-2 rounded ${
+                currentPage === totalPages
+                  ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
