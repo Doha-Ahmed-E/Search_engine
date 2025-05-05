@@ -4,7 +4,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import com.example.DatabaseConnection; // From com.example
@@ -183,7 +182,7 @@ public class Indexer
             // Save document metadata
             Document docEntry = new Document().append("doc_id", docId);
 
-                    
+
 
             documentsCollection.insertOne(docEntry);
 
@@ -242,11 +241,12 @@ public class Indexer
                 // Generate snippet from original text
                 String contextSnippet = extractContextSnippet(text, token);
 
-                // Add the occurrence with context
-                wordStats.computeIfAbsent(stemmedWord, k -> new WordStats()).addOccurrence(weight,
-                        position, contextSnippet);
-
-                wordCount++;
+                if (contextSnippet != null)
+                {
+                    wordStats.computeIfAbsent(stemmedWord, k -> new WordStats())
+                            .addOccurrence(weight, position, contextSnippet);
+                    wordCount++;
+                }
             }
             catch (Exception e)
             {
@@ -264,9 +264,7 @@ public class Indexer
         int tokenIndex = originalText.toLowerCase().indexOf(token.toLowerCase());
         if (tokenIndex == -1)
         {
-            // If exact match not found, return a reasonable substring
-            return originalText.length() <= 150 ? originalText
-                    : originalText.substring(0, 150) + "...";
+            return null;
         }
 
         // Determine the snippet boundaries (approximately 100 chars before and after)
